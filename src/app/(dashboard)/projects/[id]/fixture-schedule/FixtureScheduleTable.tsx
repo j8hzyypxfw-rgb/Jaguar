@@ -53,7 +53,11 @@ export function FixtureScheduleTable({
       .insert(newFixture)
       .select()
       .single();
-    if (!error && data) {
+    if (error) {
+      alert(`Failed to add fixture: ${error.message}`);
+      return;
+    }
+    if (data) {
       setFixtures((prev) => [...prev, data as FixtureScheduleEntry]);
     }
   }, [projectId, fixtures.length, supabase]);
