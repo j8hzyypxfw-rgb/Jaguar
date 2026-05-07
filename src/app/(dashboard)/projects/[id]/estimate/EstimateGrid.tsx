@@ -318,6 +318,7 @@ export function EstimateGrid({
         ),
       }))
     );
+    await rollupEstimate();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -387,6 +388,7 @@ export function EstimateGrid({
             total_qty:       qty,
             sort_order:      currentSortBase + i,
             price_source:    "typical",
+            typical_name:    typical.name,
             ...totals,
           })
           .select()
@@ -417,18 +419,17 @@ export function EstimateGrid({
 
       if (insertedLineItems.length === 0) return;
 
-      setPhases((prev) => {
-        const next = prev.map((p) => ({
+      setPhases((prev) =>
+        prev.map((p) => ({
           ...p,
           sections: p.sections.map((s) =>
             s.id === sectionId
               ? { ...s, line_items: [...s.line_items, ...insertedLineItems] }
               : s
           ),
-        }));
-        rollupEstimate(next);
-        return next;
-      });
+        }))
+      );
+      await rollupEstimate();
 
       setInsertTypicalSectionId(null);
       setTypicalSearch("");
@@ -523,41 +524,31 @@ export function EstimateGrid({
         (sum: number, r: { quantity: number }) => sum + (r.quantity ?? 0),
         0
       );
-      // Get unit costs for this line item from current state
-      setPhases((prev) => {
-        let unitCosts = {
-          equipment: 0,
-          excavation: 0,
-          sub: 0,
-          material: 0,
-          mhrs: 0,
-          ot_hrs: 0,
-        };
-        for (const p of prev) {
-          for (const s of p.sections) {
-            if (s.id !== sectionId) continue;
-            for (const li of s.line_items) {
-              if (li.id !== lineItemId) continue;
-              unitCosts = {
-                equipment: li.unit_equipment,
-                excavation: li.unit_excavation,
-                sub: li.unit_sub,
-                material: li.unit_material,
-                mhrs: li.unit_mhrs,
-                ot_hrs: li.unit_ot_hrs,
-              };
-            }
-          }
-        }
-        const totals = calcLineItemTotals(totalQty, unitCosts, pricingConfig);
-        // Update line_items row in DB then roll up to estimate
-        supabase
-          .from("line_items")
-          .update({ total_qty: totalQty, ...totals })
-          .eq("id", lineItemId)
-          .then(() => rollupEstimate(prev));
-        return prev; // local state already updated optimistically
-      });
+      // Get unit costs from the line item DB row directly
+      const { data: liRow } = await supabase
+        .from("line_items")
+        .select("unit_equipment, unit_excavation, unit_sub, unit_material, unit_mhrs, unit_ot_hrs")
+        .eq("id", lineItemId)
+        .single();
+
+      const unitCosts = {
+        equipment:  liRow?.unit_equipment  ?? 0,
+        excavation: liRow?.unit_excavation ?? 0,
+        sub:        liRow?.unit_sub        ?? 0,
+        material:   liRow?.unit_material   ?? 0,
+        mhrs:       liRow?.unit_mhrs       ?? 0,
+        ot_hrs:     liRow?.unit_ot_hrs     ?? 0,
+      };
+      const totals = calcLineItemTotals(totalQty, unitCosts, pricingConfig);
+
+      // Update line_items totals in DB
+      await supabase
+        .from("line_items")
+        .update({ total_qty: totalQty, ...totals })
+        .eq("id", lineItemId);
+
+      // Roll up estimate totals from DB (always accurate)
+      await rollupEstimate();
     }, 500);
     debounceTimers.current.set(key, timer);
   }
@@ -567,21 +558,35 @@ export function EstimateGrid({
   // Called after any qty or line-item change so dashboard + bid summary stay current
   // ─────────────────────────────────────────────────────────────────────────
 
-  async function rollupEstimate(currentPhases: LocalPhase[]) {
-    if (!estimate) return;
+  // Reads totals directly from DB so it's always accurate regardless of local state timing
+  async function rollupEstimate(estimateId?: string) {
+    const eid = estimateId ?? estimate?.id;
+    if (!eid) return;
+
+    // Fetch all phases → sections → line_item totals from DB
+    const { data: phaseRows } = await supabase
+      .from("phases").select("id").eq("estimate_id", eid);
+    const phaseIds = (phaseRows ?? []).map((p: { id: string }) => p.id);
+    if (phaseIds.length === 0) return;
+
+    const { data: sectionRows } = await supabase
+      .from("sections").select("id").in("phase_id", phaseIds);
+    const sectionIds = (sectionRows ?? []).map((s: { id: string }) => s.id);
+    if (sectionIds.length === 0) return;
+
+    const { data: liRows } = await supabase
+      .from("line_items")
+      .select("total_equipment, total_excavation, total_sub, total_material, total_mhrs, total_installed")
+      .in("section_id", sectionIds);
+
     let totalEquipment = 0, totalExcavation = 0, totalSubs = 0;
-    let totalMaterial = 0, totalMhrs = 0, totalInstalled = 0;
-    for (const ph of currentPhases) {
-      for (const sec of ph.sections) {
-        for (const li of sec.line_items) {
-          totalEquipment  += li.total_equipment  ?? 0;
-          totalExcavation += li.total_excavation ?? 0;
-          totalSubs       += li.total_sub        ?? 0;
-          totalMaterial   += li.total_material   ?? 0;
-          totalMhrs       += li.total_mhrs       ?? 0;
-          totalInstalled  += li.total_installed  ?? 0;
-        }
-      }
+    let totalMaterial = 0, totalMhrs = 0;
+    for (const li of (liRows ?? []) as any[]) {
+      totalEquipment  += li.total_equipment  ?? 0;
+      totalExcavation += li.total_excavation ?? 0;
+      totalSubs       += li.total_sub        ?? 0;
+      totalMaterial   += li.total_material   ?? 0;
+      totalMhrs       += li.total_mhrs       ?? 0;
     }
 
     const bondRates = {
@@ -616,7 +621,7 @@ export function EstimateGrid({
       sales_tax_amount: summary.sales_tax,
       bond_premium:     summary.bond_premium,
       total_bid:        summary.total_bid,
-    }).eq("id", estimate.id);
+    }).eq("id", eid);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1110,16 +1115,42 @@ function SectionBlock({
                   </tr>
                 )}
 
-                {section.line_items.map((li, rowIdx) => (
-                  <LineItemRow
-                    key={li.id}
-                    li={li}
-                    areas={areas}
-                    rowIdx={rowIdx}
-                    onQtyChange={(areaId, val) => onQtyChange(li.id, areaId, val)}
-                    onDelete={() => onDeleteLineItem(li.id)}
-                  />
-                ))}
+                {(() => {
+                  // Group consecutive typical items under their typical_name header
+                  const rows: React.ReactNode[] = [];
+                  let lastTypical: string | null = null;
+                  let typicalRowIdx = 0;
+                  section.line_items.forEach((li, rowIdx) => {
+                    const tName = (li as any).typical_name as string | null;
+                    if (tName && tName !== lastTypical) {
+                      lastTypical = tName;
+                      typicalRowIdx = 0;
+                      const colSpan = fixedColCount + Math.max(areas.length, 1) + computedColCount + actionColCount;
+                      rows.push(
+                        <tr key={`typ-hdr-${tName}-${rowIdx}`} className="bg-amber-50/60 border-t border-amber-200">
+                          <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-amber-800 tracking-wide">
+                            ▸ {tName}
+                          </td>
+                        </tr>
+                      );
+                    } else if (!tName) {
+                      lastTypical = null;
+                    }
+                    rows.push(
+                      <LineItemRow
+                        key={li.id}
+                        li={li}
+                        areas={areas}
+                        rowIdx={rowIdx}
+                        onQtyChange={(areaId, val) => onQtyChange(li.id, areaId, val)}
+                        onDelete={() => onDeleteLineItem(li.id)}
+                        isTypicalChild={!!tName}
+                      />
+                    );
+                    if (tName) typicalRowIdx++;
+                  });
+                  return rows;
+                })()}
               </tbody>
 
               {/* Section subtotal */}
@@ -1208,9 +1239,10 @@ interface LineItemRowProps {
   rowIdx: number;
   onQtyChange: (areaId: string, val: string) => void;
   onDelete: () => void;
+  isTypicalChild?: boolean;
 }
 
-function LineItemRow({ li, areas, rowIdx, onQtyChange, onDelete }: LineItemRowProps) {
+function LineItemRow({ li, areas, rowIdx, onQtyChange, onDelete, isTypicalChild }: LineItemRowProps) {
   const isEven = rowIdx % 2 === 0;
 
   function getQty(areaId: string): number {
@@ -1230,7 +1262,7 @@ function LineItemRow({ li, areas, rowIdx, onQtyChange, onDelete }: LineItemRowPr
         isEven ? "bg-background" : "bg-muted/10",
         "group-hover:bg-primary/5"
       )}>
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className={cn("flex items-center gap-1.5 min-w-0", isTypicalChild && "pl-3")}>
           {li.code && (
             <span className="text-[10px] font-mono text-muted-foreground shrink-0">
               {li.code}
