@@ -12,6 +12,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
+import {
+  DEFAULT_INDIRECT_LABOR,
+  DEFAULT_GEN_EXPENSES,
+  DEFAULT_RENTALS,
+} from "@/lib/estimateDefaults";
 
 const DEFAULT_PARAMS = {
   base_labor: 45.00,
@@ -75,11 +80,26 @@ export default function NewProjectPage() {
       if (error) throw error;
 
       // Create default estimate
-      await supabase.from("estimates").insert({
+      const { data: est } = await supabase.from("estimates").insert({
         project_id: data.id,
         name: "Base Bid",
         estimate_type: "base",
-      });
+      }).select("id").single();
+
+      // Seed indirect labor, gen expenses, and rentals from Ron Brown template defaults
+      if (est?.id) {
+        await Promise.all([
+          supabase.from("indirect_labor").insert(
+            DEFAULT_INDIRECT_LABOR.map((r) => ({ ...r, estimate_id: est.id }))
+          ),
+          supabase.from("general_expenses").insert(
+            DEFAULT_GEN_EXPENSES.map((r) => ({ ...r, estimate_id: est.id }))
+          ),
+          supabase.from("rentals").insert(
+            DEFAULT_RENTALS.map((r) => ({ ...r, estimate_id: est.id }))
+          ),
+        ]);
+      }
 
       toast.success("Project created");
       router.push(`/projects/${data.id}`);
