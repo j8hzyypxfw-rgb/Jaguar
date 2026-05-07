@@ -82,7 +82,7 @@ function parseTypicals(rows: unknown[][]): TypicalDef[] {
       const desc = str(r[13]);
 
       // Only include rows with a valid code and non-zero qty
-      if (col0.match(/[A-Za-z]/) && qty > 0 && desc) {
+      if (current && col0.match(/[A-Za-z]/) && qty > 0 && desc) {
         current.components.push({
           code: col0,
           description: desc,
