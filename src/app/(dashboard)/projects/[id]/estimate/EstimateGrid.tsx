@@ -71,7 +71,6 @@ interface LocalLineItem extends LineItem {
 
 interface LocalSection extends Section {
   line_items: LocalLineItem[];
-  open: boolean;
 }
 
 interface LocalPhase extends Phase {
@@ -120,7 +119,6 @@ export function EstimateGrid({
           ...li,
           quantities: (li.quantities ?? []) as LineItemQuantity[],
         })),
-        open: true,
       })),
     }))
   );
@@ -245,7 +243,6 @@ export function EstimateGrid({
     const newSection: LocalSection = {
       ...(data as Section),
       line_items: [],
-      open: true,
     };
     setPhases((prev) =>
       prev.map((p) =>
@@ -567,25 +564,6 @@ export function EstimateGrid({
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Toggle section open/closed
-  // ─────────────────────────────────────────────────────────────────────────
-
-  function toggleSection(phaseId: string, sectionId: string) {
-    setPhases((prev) =>
-      prev.map((p) =>
-        p.id !== phaseId
-          ? p
-          : {
-              ...p,
-              sections: p.sections.map((s) =>
-                s.id === sectionId ? { ...s, open: !s.open } : s
-              ),
-            }
-      )
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
   // Item search filter
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -835,7 +813,6 @@ export function EstimateGrid({
                   typicalSearch={typicalSearch}
                   typicalMultiplier={typicalMultiplier}
                   insertTypicalSectionId={insertTypicalSectionId}
-                  onToggle={() => toggleSection(activePhase.id, section.id)}
                   onQtyChange={(liId, areaId, val) =>
                     handleQtyChange(section.id, liId, areaId, val)
                   }
@@ -905,7 +882,6 @@ interface SectionBlockProps {
   typicalSearch: string;
   typicalMultiplier: string;
   insertTypicalSectionId: string | null;
-  onToggle: () => void;
   onQtyChange: (liId: string, areaId: string, val: string) => void;
   onAddLineItemClick: () => void;
   onCancelAddItem: () => void;
@@ -930,7 +906,6 @@ function SectionBlock({
   typicalSearch,
   typicalMultiplier,
   insertTypicalSectionId,
-  onToggle,
   onQtyChange,
   onAddLineItemClick,
   onCancelAddItem,
@@ -943,6 +918,7 @@ function SectionBlock({
   onTypicalSearchChange,
   onTypicalMultiplierChange,
 }: SectionBlockProps) {
+  const [isOpen, setIsOpen] = useState(true);
   const isAddingItems = addingItemSectionId === section.id;
   const isInsertingTypical = insertTypicalSectionId === section.id;
 
@@ -964,9 +940,9 @@ function SectionBlock({
       {/* Section header */}
       <div
         className="flex items-center gap-2 px-3 py-2 bg-muted/40 border-b cursor-pointer select-none hover:bg-muted/60 transition-colors"
-        onClick={onToggle}
+        onClick={() => setIsOpen((v) => !v)}
       >
-        {section.open ? (
+        {isOpen ? (
           <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         ) : (
           <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -982,7 +958,7 @@ function SectionBlock({
         </span>
       </div>
 
-      {section.open && (
+      {isOpen && (
         <>
           {/* Spreadsheet table */}
           <div className="overflow-x-auto">
