@@ -22,7 +22,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import { calcLineItemTotals } from "@/lib/pricing";
+import { calcLineItemTotals, calcBidSummary } from "@/lib/pricing";
 import type {
   Project,
   Estimate,
@@ -421,16 +421,73 @@ export function EstimateGrid({
           }
         }
         const totals = calcLineItemTotals(totalQty, unitCosts, pricingConfig);
-        // Update line_items row in DB
+        // Update line_items row in DB then roll up to estimate
         supabase
           .from("line_items")
           .update({ total_qty: totalQty, ...totals })
           .eq("id", lineItemId)
-          .then(() => {});
+          .then(() => rollupEstimate(prev));
         return prev; // local state already updated optimistically
       });
     }, 500);
     debounceTimers.current.set(key, timer);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Roll up all line-item totals into the estimates record
+  // Called after any qty or line-item change so dashboard + bid summary stay current
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async function rollupEstimate(currentPhases: LocalPhase[]) {
+    if (!estimate) return;
+    let totalEquipment = 0, totalExcavation = 0, totalSubs = 0;
+    let totalMaterial = 0, totalMhrs = 0, totalInstalled = 0;
+    for (const ph of currentPhases) {
+      for (const sec of ph.sections) {
+        for (const li of sec.line_items) {
+          totalEquipment  += li.total_equipment  ?? 0;
+          totalExcavation += li.total_excavation ?? 0;
+          totalSubs       += li.total_sub        ?? 0;
+          totalMaterial   += li.total_material   ?? 0;
+          totalMhrs       += li.total_mhrs       ?? 0;
+          totalInstalled  += li.total_installed  ?? 0;
+        }
+      }
+    }
+
+    const bondRates = {
+      bond_rate_tier1: 0.025, bond_rate_tier2: 0.015, bond_rate_tier3: 0.010,
+      bond_rate_tier4: 0.0075, bond_rate_tier5: 0.0070, bond_rate_tier6: 0.0065,
+    };
+
+    const summary = calcBidSummary({
+      directEquipment: totalEquipment,
+      directExcavation: totalExcavation,
+      directSubs: totalSubs,
+      directMaterial: totalMaterial,
+      directMhrs: totalMhrs,
+      directOtHrs: 0,
+      indirectLabor: 0,
+      genExp: 0,
+      rental: 0,
+      config: { ...pricingConfig, ...bondRates },
+    });
+
+    await supabase.from("estimates").update({
+      total_equipment:  totalEquipment,
+      total_excavation: totalExcavation,
+      total_subs:       totalSubs,
+      total_material:   totalMaterial,
+      total_mhrs:       totalMhrs,
+      direct_cost:      summary.direct_cost,
+      job_expense_cost: summary.job_expense,
+      job_exp_cow_cost: summary.job_exp_cow,
+      overhead_cost:    summary.overhead,
+      profit_cost:      summary.profit,
+      sales_tax_amount: summary.sales_tax,
+      bond_premium:     summary.bond_premium,
+      total_bid:        summary.total_bid,
+    }).eq("id", estimate.id);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
