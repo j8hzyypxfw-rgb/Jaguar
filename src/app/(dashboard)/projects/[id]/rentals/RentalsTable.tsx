@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
+import { rollupEstimate } from "@/lib/rollupEstimate";
 import type { Rental } from "@/types";
 
 type DurationUnit = "day" | "week" | "month";
@@ -52,13 +53,9 @@ export function RentalsTable({
     });
 
   const updateEstimateTotal = useCallback(
-    async (updatedRows: Rental[]) => {
+    async () => {
       if (!estimateId) return;
-      const total = updatedRows.reduce((s, r) => s + (r.total_cost ?? 0), 0);
-      await supabase
-        .from("estimates")
-        .update({ rental_cost: total })
-        .eq("id", estimateId);
+      await rollupEstimate(supabase, estimateId);
     },
     [estimateId, supabase]
   );
@@ -87,7 +84,7 @@ export function RentalsTable({
     if (!error && data) {
       const next = [...rows, data as Rental];
       setRows(next);
-      await updateEstimateTotal(next);
+      await updateEstimateTotal();
     }
   }, [estimateId, rows, supabase, updateEstimateTotal]);
 
@@ -111,7 +108,7 @@ export function RentalsTable({
             : r
         );
         setRows(next);
-        await updateEstimateTotal(next);
+        await updateEstimateTotal();
       }
       markSaving(id, false);
     },
@@ -124,7 +121,7 @@ export function RentalsTable({
       if (!error) {
         const next = rows.filter((r) => r.id !== id);
         setRows(next);
-        await updateEstimateTotal(next);
+        await updateEstimateTotal();
       }
     },
     [rows, supabase, updateEstimateTotal]

@@ -23,7 +23,8 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import { calcLineItemTotals, calcBidSummary } from "@/lib/pricing";
+import { calcLineItemTotals } from "@/lib/pricing";
+import { rollupEstimate as sharedRollup } from "@/lib/rollupEstimate";
 import type {
   Project,
   Estimate,
@@ -562,66 +563,7 @@ export function EstimateGrid({
   async function rollupEstimate(estimateId?: string) {
     const eid = estimateId ?? estimate?.id;
     if (!eid) return;
-
-    // Fetch all phases → sections → line_item totals from DB
-    const { data: phaseRows } = await supabase
-      .from("phases").select("id").eq("estimate_id", eid);
-    const phaseIds = (phaseRows ?? []).map((p: { id: string }) => p.id);
-    if (phaseIds.length === 0) return;
-
-    const { data: sectionRows } = await supabase
-      .from("sections").select("id").in("phase_id", phaseIds);
-    const sectionIds = (sectionRows ?? []).map((s: { id: string }) => s.id);
-    if (sectionIds.length === 0) return;
-
-    const { data: liRows } = await supabase
-      .from("line_items")
-      .select("total_equipment, total_excavation, total_sub, total_material, total_mhrs, total_installed")
-      .in("section_id", sectionIds);
-
-    let totalEquipment = 0, totalExcavation = 0, totalSubs = 0;
-    let totalMaterial = 0, totalMhrs = 0;
-    for (const li of (liRows ?? []) as any[]) {
-      totalEquipment  += li.total_equipment  ?? 0;
-      totalExcavation += li.total_excavation ?? 0;
-      totalSubs       += li.total_sub        ?? 0;
-      totalMaterial   += li.total_material   ?? 0;
-      totalMhrs       += li.total_mhrs       ?? 0;
-    }
-
-    const bondRates = {
-      bond_rate_tier1: 0.025, bond_rate_tier2: 0.015, bond_rate_tier3: 0.010,
-      bond_rate_tier4: 0.0075, bond_rate_tier5: 0.0070, bond_rate_tier6: 0.0065,
-    };
-
-    const summary = calcBidSummary({
-      directEquipment: totalEquipment,
-      directExcavation: totalExcavation,
-      directSubs: totalSubs,
-      directMaterial: totalMaterial,
-      directMhrs: totalMhrs,
-      directOtHrs: 0,
-      indirectLabor: 0,
-      genExp: 0,
-      rental: 0,
-      config: { ...pricingConfig, ...bondRates },
-    });
-
-    await supabase.from("estimates").update({
-      total_equipment:  totalEquipment,
-      total_excavation: totalExcavation,
-      total_subs:       totalSubs,
-      total_material:   totalMaterial,
-      total_mhrs:       totalMhrs,
-      direct_cost:      summary.direct_cost,
-      job_expense_cost: summary.job_expense,
-      job_exp_cow_cost: summary.job_exp_cow,
-      overhead_cost:    summary.overhead,
-      profit_cost:      summary.profit,
-      sales_tax_amount: summary.sales_tax,
-      bond_premium:     summary.bond_premium,
-      total_bid:        summary.total_bid,
-    }).eq("id", eid);
+    await sharedRollup(supabase, eid);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

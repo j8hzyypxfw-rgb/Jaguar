@@ -5,6 +5,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
+import { rollupEstimate } from "@/lib/rollupEstimate";
 
 interface IndirectRow {
   id: string;
@@ -105,10 +106,11 @@ export function IndirectLaborTable({
               : r
           )
         );
+        if (estimateId) await rollupEstimate(supabase, estimateId);
       }
       markSaving(id, false);
     },
-    [rows, supabase]
+    [rows, supabase, estimateId]
   );
 
   // ── Delete a row ─────────────────────────────────────────────────────────
@@ -120,9 +122,10 @@ export function IndirectLaborTable({
         .eq("id", id);
       if (!error) {
         setRows((prev) => prev.filter((r) => r.id !== id));
+        if (estimateId) await rollupEstimate(supabase, estimateId);
       }
     },
-    [supabase]
+    [supabase, estimateId]
   );
 
   const grandTotal = rows.reduce((s, r) => s + (r.total_cost ?? 0), 0);

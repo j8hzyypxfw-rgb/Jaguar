@@ -5,6 +5,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
+import { rollupEstimate } from "@/lib/rollupEstimate";
 import type { GeneralExpense } from "@/types";
 
 function fmt(n: number) {
@@ -40,13 +41,9 @@ export function GenExpTable({
     });
 
   const updateEstimateTotal = useCallback(
-    async (updatedRows: GeneralExpense[]) => {
+    async () => {
       if (!estimateId) return;
-      const total = updatedRows.reduce((s, r) => s + (r.total_cost ?? 0), 0);
-      await supabase
-        .from("estimates")
-        .update({ gen_exp_cost: total })
-        .eq("id", estimateId);
+      await rollupEstimate(supabase, estimateId);
     },
     [estimateId, supabase]
   );
@@ -73,7 +70,7 @@ export function GenExpTable({
     if (!error && data) {
       const next = [...rows, data as GeneralExpense];
       setRows(next);
-      await updateEstimateTotal(next);
+      await updateEstimateTotal();
     }
   }, [estimateId, rows, supabase, updateEstimateTotal]);
 
@@ -97,7 +94,7 @@ export function GenExpTable({
             : r
         );
         setRows(next);
-        await updateEstimateTotal(next);
+        await updateEstimateTotal();
       }
       markSaving(id, false);
     },
@@ -113,7 +110,7 @@ export function GenExpTable({
       if (!error) {
         const next = rows.filter((r) => r.id !== id);
         setRows(next);
-        await updateEstimateTotal(next);
+        await updateEstimateTotal();
       }
     },
     [rows, supabase, updateEstimateTotal]
