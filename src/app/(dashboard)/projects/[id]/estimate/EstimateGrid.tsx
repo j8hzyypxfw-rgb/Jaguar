@@ -4,6 +4,7 @@ import React, {
   useState,
   useRef,
   useMemo,
+  useCallback,
 } from "react";
 import Link from "next/link";
 import {
@@ -33,6 +34,8 @@ import type {
   LineItemQuantity,
   PricingConfig,
   Item,
+  Typical,
+  TypicalLineItem,
 } from "@/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +87,8 @@ interface EstimateGridProps {
   areas: Area[];
   phases: Phase[];
   items: Item[];
+  typicals: Typical[];
+  typicalLineItems: TypicalLineItem[];
   pricingConfig: PricingConfig;
 }
 
@@ -97,6 +102,8 @@ export function EstimateGrid({
   areas: initialAreas,
   phases: initialPhases,
   items: allItems,
+  typicals: allTypicals,
+  typicalLineItems: allTypicalLineItems,
   pricingConfig,
 }: EstimateGridProps) {
   const supabase = createClient();
@@ -133,6 +140,11 @@ export function EstimateGrid({
   // Add-line-item search (keyed by section id)
   const [addingItemSectionId, setAddingItemSectionId] = useState<string | null>(null);
   const [itemSearch, setItemSearch] = useState("");
+
+  // Insert-typical panel (keyed by section id)
+  const [insertTypicalSectionId, setInsertTypicalSectionId] = useState<string | null>(null);
+  const [typicalSearch, setTypicalSearch] = useState("");
+  const [typicalMultiplier, setTypicalMultiplier] = useState("1");
 
   // ── Debounce qty updates ────────────────────────────────────────────────────
   const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -307,6 +319,123 @@ export function EstimateGrid({
       }))
     );
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Insert typical — explodes all typical_line_items into a section
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleInsertTypical = useCallback(
+    async (sectionId: string, typical: Typical, multiplier: number) => {
+      const components = allTypicalLineItems.filter(
+        (tli) => tli.typical_id === typical.id
+      );
+      if (components.length === 0) return;
+
+      // Find the section to get current line count for sort_order
+      let currentSortBase = 0;
+      for (const ph of phases) {
+        for (const sec of ph.sections) {
+          if (sec.id === sectionId) {
+            currentSortBase = sec.line_items.length;
+          }
+        }
+      }
+
+      // Look up DB item for each component to get unit costs
+      const insertedLineItems: LocalLineItem[] = [];
+
+      for (let i = 0; i < components.length; i++) {
+        const comp = components[i];
+        // Find matching item in DB for unit costs
+        const dbItem = allItems.find((it) => it.id === comp.item_id);
+
+        const qty = comp.quantity * multiplier;
+
+        const unitEquipment  = dbItem?.equipment_cost  ?? 0;
+        const unitExcavation = dbItem?.excavation_cost ?? 0;
+        const unitSub        = dbItem?.sub_cost        ?? 0;
+        const unitMaterial   = dbItem?.material_cost   ?? 0;
+        const unitMhrs       = dbItem?.man_hours       ?? 0;
+
+        const totals = calcLineItemTotals(
+          qty,
+          {
+            equipment:  unitEquipment,
+            excavation: unitExcavation,
+            sub:        unitSub,
+            material:   unitMaterial,
+            mhrs:       unitMhrs,
+            ot_hrs:     0,
+          },
+          pricingConfig
+        );
+
+        const { data, error } = await supabase
+          .from("line_items")
+          .insert({
+            section_id:      sectionId,
+            item_id:         comp.item_id,
+            code:            comp.code,
+            description:     comp.description,
+            unit_of_measure: comp.uom,
+            unit_equipment:  unitEquipment,
+            unit_excavation: unitExcavation,
+            unit_sub:        unitSub,
+            unit_material:   unitMaterial,
+            unit_mhrs:       unitMhrs,
+            unit_ot_hrs:     0,
+            total_qty:       qty,
+            sort_order:      currentSortBase + i,
+            price_source:    "typical",
+            ...totals,
+          })
+          .select()
+          .single();
+
+        if (error) { console.error(error); continue; }
+
+        const newLI: LocalLineItem = { ...(data as LineItem), quantities: [] };
+
+        // If areas exist, upsert a quantity row for the first area
+        if (areas.length > 0) {
+          const firstArea = areas[0];
+          const { data: qData } = await supabase
+            .from("line_item_quantities")
+            .upsert(
+              { line_item_id: newLI.id, area_id: firstArea.id, quantity: qty },
+              { onConflict: "line_item_id,area_id" }
+            )
+            .select()
+            .single();
+          if (qData) {
+            newLI.quantities = [qData as LineItemQuantity];
+          }
+        }
+
+        insertedLineItems.push(newLI);
+      }
+
+      if (insertedLineItems.length === 0) return;
+
+      setPhases((prev) => {
+        const next = prev.map((p) => ({
+          ...p,
+          sections: p.sections.map((s) =>
+            s.id === sectionId
+              ? { ...s, line_items: [...s.line_items, ...insertedLineItems] }
+              : s
+          ),
+        }));
+        rollupEstimate(next);
+        return next;
+      });
+
+      setInsertTypicalSectionId(null);
+      setTypicalSearch("");
+      setTypicalMultiplier("1");
+    },
+    [allTypicalLineItems, allItems, areas, phases, pricingConfig, supabase]
+  );
 
   // ─────────────────────────────────────────────────────────────────────────
   // Quantity input handling (debounced upsert)
@@ -525,6 +654,19 @@ export function EstimateGrid({
       .slice(0, 50);
   }, [allItems, itemSearch]);
 
+  const filteredTypicals = useMemo(() => {
+    if (!typicalSearch.trim()) return allTypicals.slice(0, 50);
+    const q = typicalSearch.toLowerCase();
+    return allTypicals
+      .filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          (t.code ?? "").toLowerCase().includes(q) ||
+          (t.description ?? "").toLowerCase().includes(q)
+      )
+      .slice(0, 50);
+  }, [allTypicals, typicalSearch]);
+
   // ─────────────────────────────────────────────────────────────────────────
   // Phase totals (computed from local line items)
   // ─────────────────────────────────────────────────────────────────────────
@@ -742,12 +884,17 @@ export function EstimateGrid({
                   filteredItems={filteredItems}
                   itemSearch={itemSearch}
                   addingItemSectionId={addingItemSectionId}
+                  filteredTypicals={filteredTypicals}
+                  typicalSearch={typicalSearch}
+                  typicalMultiplier={typicalMultiplier}
+                  insertTypicalSectionId={insertTypicalSectionId}
                   onToggle={() => toggleSection(activePhase.id, section.id)}
                   onQtyChange={(liId, areaId, val) =>
                     handleQtyChange(section.id, liId, areaId, val)
                   }
                   onAddLineItemClick={() => {
                     setAddingItemSectionId(section.id);
+                    setInsertTypicalSectionId(null);
                     setItemSearch("");
                   }}
                   onCancelAddItem={() => setAddingItemSectionId(null)}
@@ -758,6 +905,22 @@ export function EstimateGrid({
                   onDeleteLineItem={(liId) =>
                     handleDeleteLineItem(section.id, liId)
                   }
+                  onInsertTypicalClick={() => {
+                    setInsertTypicalSectionId(section.id);
+                    setAddingItemSectionId(null);
+                    setTypicalSearch("");
+                    setTypicalMultiplier("1");
+                  }}
+                  onCancelInsertTypical={() => setInsertTypicalSectionId(null)}
+                  onSelectTypical={(typical) =>
+                    handleInsertTypical(
+                      section.id,
+                      typical,
+                      parseFloat(typicalMultiplier) || 1
+                    )
+                  }
+                  onTypicalSearchChange={(v) => setTypicalSearch(v)}
+                  onTypicalMultiplierChange={(v) => setTypicalMultiplier(v)}
                 />
               ))
             )}
@@ -791,6 +954,10 @@ interface SectionBlockProps {
   filteredItems: Item[];
   itemSearch: string;
   addingItemSectionId: string | null;
+  filteredTypicals: Typical[];
+  typicalSearch: string;
+  typicalMultiplier: string;
+  insertTypicalSectionId: string | null;
   onToggle: () => void;
   onQtyChange: (liId: string, areaId: string, val: string) => void;
   onAddLineItemClick: () => void;
@@ -798,6 +965,11 @@ interface SectionBlockProps {
   onSelectItem: (item: Item) => void;
   onItemSearchChange: (v: string) => void;
   onDeleteLineItem: (liId: string) => void;
+  onInsertTypicalClick: () => void;
+  onCancelInsertTypical: () => void;
+  onSelectTypical: (typical: Typical) => void;
+  onTypicalSearchChange: (v: string) => void;
+  onTypicalMultiplierChange: (v: string) => void;
 }
 
 function SectionBlock({
@@ -807,6 +979,10 @@ function SectionBlock({
   filteredItems,
   itemSearch,
   addingItemSectionId,
+  filteredTypicals,
+  typicalSearch,
+  typicalMultiplier,
+  insertTypicalSectionId,
   onToggle,
   onQtyChange,
   onAddLineItemClick,
@@ -814,8 +990,14 @@ function SectionBlock({
   onSelectItem,
   onItemSearchChange,
   onDeleteLineItem,
+  onInsertTypicalClick,
+  onCancelInsertTypical,
+  onSelectTypical,
+  onTypicalSearchChange,
+  onTypicalMultiplierChange,
 }: SectionBlockProps) {
   const isAddingItems = addingItemSectionId === section.id;
+  const isInsertingTypical = insertTypicalSectionId === section.id;
 
   // Section totals
   const secMat = section.line_items.reduce((s, li) => s + li.total_material, 0);
@@ -969,24 +1151,44 @@ function SectionBlock({
             </table>
           </div>
 
-          {/* Add line item area */}
+          {/* Add line item / Insert typical area */}
           <div className="border-t px-3 py-2">
-            {!isAddingItems ? (
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={onAddLineItemClick}
-              >
-                <Plus className="w-3 h-3 mr-1" />
-                Add Line Item
-              </Button>
-            ) : (
+            {!isAddingItems && !isInsertingTypical ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={onAddLineItemClick}
+                >
+                  <Plus className="w-3 h-3 mr-1" />
+                  Add Line Item
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={onInsertTypicalClick}
+                >
+                  <Layers className="w-3 h-3 mr-1" />
+                  Insert Typical
+                </Button>
+              </div>
+            ) : isAddingItems ? (
               <ItemSearchPanel
                 items={filteredItems}
                 search={itemSearch}
                 onSearchChange={onItemSearchChange}
                 onSelect={onSelectItem}
                 onCancel={onCancelAddItem}
+              />
+            ) : (
+              <TypicalSearchPanel
+                typicals={filteredTypicals}
+                search={typicalSearch}
+                multiplier={typicalMultiplier}
+                onSearchChange={onTypicalSearchChange}
+                onMultiplierChange={onTypicalMultiplierChange}
+                onSelect={onSelectTypical}
+                onCancel={onCancelInsertTypical}
               />
             )}
           </div>
@@ -1222,6 +1424,106 @@ function ItemSearchPanel({
       </div>
 
       {items.length === 50 && (
+        <p className="text-[10px] text-muted-foreground">
+          Showing first 50 results. Refine your search.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TypicalSearchPanel
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface TypicalSearchPanelProps {
+  typicals: Typical[];
+  search: string;
+  multiplier: string;
+  onSearchChange: (v: string) => void;
+  onMultiplierChange: (v: string) => void;
+  onSelect: (typical: Typical) => void;
+  onCancel: () => void;
+}
+
+function TypicalSearchPanel({
+  typicals,
+  search,
+  multiplier,
+  onSearchChange,
+  onMultiplierChange,
+  onSelect,
+  onCancel,
+}: TypicalSearchPanelProps) {
+  return (
+    <div className="rounded-lg border bg-card shadow-md p-3 space-y-2 max-w-2xl">
+      <div className="flex items-center gap-2">
+        {/* Multiplier input */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            Qty multiplier:
+          </span>
+          <Input
+            type="number"
+            min="0"
+            step="any"
+            value={multiplier}
+            onChange={(e) => onMultiplierChange(e.target.value)}
+            className="h-7 text-xs w-20 text-right"
+          />
+        </div>
+
+        {/* Search input */}
+        <div className="relative flex-1">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search typicals…"
+            className="h-7 text-xs pl-7 pr-2"
+          />
+        </div>
+
+        <Button size="icon-xs" variant="ghost" onClick={onCancel}>
+          <X className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      <div className="max-h-52 overflow-y-auto rounded border divide-y">
+        {typicals.length === 0 ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+            No typicals found. Build your library on the Typicals page.
+          </div>
+        ) : (
+          typicals.map((typical) => (
+            <button
+              key={typical.id}
+              onClick={() => onSelect(typical)}
+              className="w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors"
+            >
+              {typical.code && (
+                <span className="font-mono text-[10px] text-muted-foreground w-16 shrink-0 truncate">
+                  {typical.code}
+                </span>
+              )}
+              <span className="text-xs flex-1 truncate font-medium">
+                {typical.name}
+              </span>
+              {typical.description && (
+                <span className="text-[10px] text-muted-foreground shrink-0 truncate max-w-[180px]">
+                  {typical.description}
+                </span>
+              )}
+              <span className="text-[10px] text-muted-foreground shrink-0">
+                {typical.unit_of_measure}
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+
+      {typicals.length === 50 && (
         <p className="text-[10px] text-muted-foreground">
           Showing first 50 results. Refine your search.
         </p>

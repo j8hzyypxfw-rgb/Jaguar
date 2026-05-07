@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { projectToPricingConfig } from "@/lib/pricing";
 import { EstimateGrid } from "./EstimateGrid";
-import type { Project, Estimate, Area, Phase, Item } from "@/types";
+import type { Project, Estimate, Area, Phase, Item, Typical, TypicalLineItem } from "@/types";
 
 export default async function EstimatePage({
   params,
@@ -86,6 +86,29 @@ export default async function EstimatePage({
 
   const items: Partial<Item>[] = itemsData ?? [];
 
+  // Load global typicals library (workspace_id is null for shared library)
+  const { data: typicalsData } = await supabase
+    .from("typicals")
+    .select("*")
+    .is("workspace_id", null)
+    .eq("is_active", true)
+    .order("name");
+
+  const typicals: Typical[] = (typicalsData ?? []) as Typical[];
+
+  // Load all typical_line_items for those typicals
+  const typicalIds = typicals.map((t) => t.id);
+  const { data: typicalLineItemsData } =
+    typicalIds.length > 0
+      ? await supabase
+          .from("typical_line_items")
+          .select("*")
+          .in("typical_id", typicalIds)
+          .order("sort_order")
+      : { data: [] };
+
+  const typicalLineItems: TypicalLineItem[] = (typicalLineItemsData ?? []) as TypicalLineItem[];
+
   const pricingConfig = projectToPricingConfig(project);
 
   return (
@@ -95,6 +118,8 @@ export default async function EstimatePage({
       areas={areas}
       phases={phases as Phase[]}
       items={items as Item[]}
+      typicals={typicals}
+      typicalLineItems={typicalLineItems}
       pricingConfig={pricingConfig}
     />
   );

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Calculator, FileText, Settings2, Users, Package } from "lucide-react";
+import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -116,6 +116,24 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           icon={Package}
           title="Fixture Schedule"
           description="Map fixture type letters to fixture specifications, watts, and run lengths."
+        />
+        <ActionCard
+          href={`/projects/${id}/gen-expenses`}
+          icon={Receipt}
+          title="General Expenses"
+          description="Trailer, tools, consumables, per diem, safety, permits, and other project overhead."
+        />
+        <ActionCard
+          href={`/projects/${id}/rentals`}
+          icon={Truck}
+          title="Rental Equipment"
+          description="Lifts, compressors, generators, and other equipment rentals with tax."
+        />
+        <ActionCard
+          href={`/projects/${id}/typicals`}
+          icon={Layers}
+          title="Typicals"
+          description="Pre-built assemblies. Insert a typical to explode into all component line items instantly."
         />
       </div>
     </div>

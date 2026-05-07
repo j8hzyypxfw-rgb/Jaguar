@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, FolderOpen, Database,
-  ChevronRight, Zap,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,14 +21,15 @@ export function Sidebar() {
   return (
     <aside className="flex flex-col w-56 shrink-0 border-r bg-card h-full">
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b">
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary text-primary-foreground">
-          <Zap className="w-4 h-4" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold tracking-tight leading-none">Jaguar</p>
-          <p className="text-[10px] text-muted-foreground leading-none mt-0.5">Electrical Estimating</p>
-        </div>
+      <div className="flex items-center justify-center px-4 py-3 border-b">
+        <Image
+          src="/jaguar-logo.jpg"
+          alt="Jaguar Electrical Solutions"
+          width={180}
+          height={56}
+          className="object-contain"
+          priority
+        />
       </div>
 
       {/* Nav */}
