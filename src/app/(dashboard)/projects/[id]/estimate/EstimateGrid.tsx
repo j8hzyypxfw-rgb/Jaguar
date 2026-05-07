@@ -5,6 +5,7 @@ import React, {
   useRef,
   useMemo,
   useCallback,
+  useEffect,
 } from "react";
 import Link from "next/link";
 import {
@@ -138,7 +139,6 @@ export function EstimateGrid({
 
   // Add-line-item search (keyed by section id)
   const [addingItemSectionId, setAddingItemSectionId] = useState<string | null>(null);
-  const [itemSearch, setItemSearch] = useState("");
 
   // Insert-typical panel (keyed by section id)
   const [insertTypicalSectionId, setInsertTypicalSectionId] = useState<string | null>(null);
@@ -301,7 +301,6 @@ export function EstimateGrid({
       }))
     );
     setAddingItemSectionId(null);
-    setItemSearch("");
   }
 
   async function handleDeleteLineItem(sectionId: string, lineItemId: string) {
@@ -564,20 +563,7 @@ export function EstimateGrid({
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Item search filter
-  // ─────────────────────────────────────────────────────────────────────────
 
-  const filteredItems = useMemo(() => {
-    if (!itemSearch.trim()) return allItems.slice(0, 50);
-    const q = itemSearch.toLowerCase();
-    return allItems
-      .filter(
-        (it) =>
-          it.code.toLowerCase().includes(q) ||
-          it.description.toLowerCase().includes(q)
-      )
-      .slice(0, 50);
-  }, [allItems, itemSearch]);
 
   const filteredTypicals = useMemo(() => {
     if (!typicalSearch.trim()) return allTypicals.slice(0, 50);
@@ -806,8 +792,6 @@ export function EstimateGrid({
                   section={section}
                   areas={areas}
                   pricingConfig={pricingConfig}
-                  filteredItems={filteredItems}
-                  itemSearch={itemSearch}
                   addingItemSectionId={addingItemSectionId}
                   filteredTypicals={filteredTypicals}
                   typicalSearch={typicalSearch}
@@ -819,13 +803,11 @@ export function EstimateGrid({
                   onAddLineItemClick={() => {
                     setAddingItemSectionId(section.id);
                     setInsertTypicalSectionId(null);
-                    setItemSearch("");
-                  }}
+                                  }}
                   onCancelAddItem={() => setAddingItemSectionId(null)}
                   onSelectItem={(item) =>
                     handleAddLineItem(section.id, item)
                   }
-                  onItemSearchChange={(v) => setItemSearch(v)}
                   onDeleteLineItem={(liId) =>
                     handleDeleteLineItem(section.id, liId)
                   }
@@ -875,8 +857,6 @@ interface SectionBlockProps {
   section: LocalSection;
   areas: Area[];
   pricingConfig: PricingConfig;
-  filteredItems: Item[];
-  itemSearch: string;
   addingItemSectionId: string | null;
   filteredTypicals: Typical[];
   typicalSearch: string;
@@ -886,7 +866,6 @@ interface SectionBlockProps {
   onAddLineItemClick: () => void;
   onCancelAddItem: () => void;
   onSelectItem: (item: Item) => void;
-  onItemSearchChange: (v: string) => void;
   onDeleteLineItem: (liId: string) => void;
   onInsertTypicalClick: () => void;
   onCancelInsertTypical: () => void;
@@ -899,8 +878,6 @@ function SectionBlock({
   section,
   areas,
   pricingConfig,
-  filteredItems,
-  itemSearch,
   addingItemSectionId,
   filteredTypicals,
   typicalSearch,
@@ -910,7 +887,6 @@ function SectionBlock({
   onAddLineItemClick,
   onCancelAddItem,
   onSelectItem,
-  onItemSearchChange,
   onDeleteLineItem,
   onInsertTypicalClick,
   onCancelInsertTypical,
@@ -1123,9 +1099,6 @@ function SectionBlock({
               </div>
             ) : isAddingItems ? (
               <ItemSearchPanel
-                items={filteredItems}
-                search={itemSearch}
-                onSearchChange={onItemSearchChange}
                 onSelect={onSelectItem}
                 onCancel={onCancelAddItem}
               />
@@ -1314,20 +1287,34 @@ const QtyInput = React.memo(function QtyInput({
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface ItemSearchPanelProps {
-  items: Item[];
-  search: string;
-  onSearchChange: (v: string) => void;
   onSelect: (item: Item) => void;
   onCancel: () => void;
 }
 
-function ItemSearchPanel({
-  items,
-  search,
-  onSearchChange,
-  onSelect,
-  onCancel,
-}: ItemSearchPanelProps) {
+function ItemSearchPanel({ onSelect, onCancel }: ItemSearchPanelProps) {
+  const supabase = createClient();
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) { setResults([]); return; }
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      const { data } = await supabase
+        .from("items")
+        .select("id, code, description, category, unit_of_measure, material_cost, man_hours, equipment_cost, excavation_cost, sub_cost")
+        .eq("is_active", true)
+        .or(`code.ilike.%${q}%,description.ilike.%${q}%`)
+        .order("code")
+        .limit(50);
+      setResults((data ?? []) as Item[]);
+      setLoading(false);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   return (
     <div className="rounded-lg border bg-card shadow-md p-3 space-y-2 max-w-xl">
       <div className="flex items-center gap-2">
@@ -1336,7 +1323,7 @@ function ItemSearchPanel({
           <Input
             autoFocus
             value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by code or description…"
             className="h-7 text-xs pl-7 pr-2"
           />
@@ -1347,12 +1334,14 @@ function ItemSearchPanel({
       </div>
 
       <div className="max-h-48 overflow-y-auto rounded border divide-y">
-        {items.length === 0 ? (
-          <div className="px-3 py-4 text-xs text-muted-foreground text-center">
-            No items found
-          </div>
+        {loading ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">Searching…</div>
+        ) : !search.trim() ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">Type to search items</div>
+        ) : results.length === 0 ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">No items found</div>
         ) : (
-          items.map((item) => (
+          results.map((item) => (
             <button
               key={item.id}
               onClick={() => onSelect(item)}
@@ -1373,10 +1362,8 @@ function ItemSearchPanel({
         )}
       </div>
 
-      {items.length === 50 && (
-        <p className="text-[10px] text-muted-foreground">
-          Showing first 50 results. Refine your search.
-        </p>
+      {results.length === 50 && (
+        <p className="text-[10px] text-muted-foreground">Showing first 50. Refine your search.</p>
       )}
     </div>
   );
