@@ -3,16 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, FolderOpen, Database, Settings,
+  LayoutDashboard, FolderOpen, Database,
   ChevronRight, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const nav = [
-  { label: "Dashboard",  href: "/projects",  icon: LayoutDashboard },
-  { label: "Projects",   href: "/projects",  icon: FolderOpen },
-  { label: "Database",   href: "/database",  icon: Database },
-  { label: "Settings",   href: "/settings",  icon: Settings },
+  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { label: "Projects",  href: "/projects",  icon: FolderOpen },
+  { label: "Database",  href: "/database",  icon: Database },
 ];
 
 export function Sidebar() {
