@@ -9,6 +9,7 @@ import {
   Search,
   X,
   Check,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +67,11 @@ export function TypicalsTable({
   const [addingComponentForId, setAddingComponentForId] = useState<string | null>(null);
   const [componentSearch, setComponentSearch] = useState("");
   const [componentQty, setComponentQty] = useState("1");
+
+  // Inline editing for typical name/description
+  const [editingTypicalId, setEditingTypicalId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
 
   // ── Filtered items for component search ───────────────────────────────────
   const filteredItems = useMemo(() => {
@@ -170,6 +176,38 @@ export function TypicalsTable({
     setComponentQty("1");
   }
 
+  // ── Save typical name/description inline edit ─────────────────────────────
+  async function handleSaveTypicalName(id: string) {
+    const name = editName.trim();
+    if (!name) return;
+    const { error } = await supabase
+      .from("typicals")
+      .update({ name, description: editDescription.trim() || null })
+      .eq("id", id);
+    if (!error) {
+      setTypicals((prev) =>
+        prev.map((t) =>
+          t.id === id ? { ...t, name, description: editDescription.trim() || null } : t
+        )
+      );
+    }
+    setEditingTypicalId(null);
+  }
+
+  // ── Save component qty inline ─────────────────────────────────────────────
+  async function handleSaveComponentQty(compId: string, raw: string) {
+    const qty = parseFloat(raw) || 0;
+    const { error } = await supabase
+      .from("typical_line_items")
+      .update({ quantity: qty })
+      .eq("id", compId);
+    if (!error) {
+      setLineItems((prev) =>
+        prev.map((li) => (li.id === compId ? { ...li, quantity: qty } : li))
+      );
+    }
+  }
+
   // ── Delete a component ────────────────────────────────────────────────────
   const handleDeleteComponent = useCallback(
     async (lineItemId: string) => {
@@ -264,45 +302,91 @@ export function TypicalsTable({
         const isAddingComponent = addingComponentForId === typical.id;
 
         return (
-          <div key={typical.id} className="rounded-lg border bg-card overflow-hidden">
+          <div key={typical.id} className="group rounded-lg border bg-card overflow-hidden">
             {/* Card header */}
-            <div
-              className="flex items-center gap-2 px-4 py-3 cursor-pointer select-none hover:bg-muted/40 transition-colors"
-              onClick={() => toggleExpand(typical.id)}
-            >
-              {isExpanded ? (
-                <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-              )}
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-3">
-                  <span className="font-medium text-sm">{typical.name}</span>
-                  {typical.description && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {typical.description}
-                    </span>
-                  )}
-                </div>
+            {editingTypicalId === typical.id ? (
+              <div className="flex items-center gap-2 px-4 py-2.5 bg-muted/20" onClick={(e) => e.stopPropagation()}>
+                <Input
+                  autoFocus
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveTypicalName(typical.id);
+                    if (e.key === "Escape") setEditingTypicalId(null);
+                  }}
+                  placeholder="Typical name"
+                  className="h-8 text-sm w-52"
+                />
+                <Input
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveTypicalName(typical.id);
+                    if (e.key === "Escape") setEditingTypicalId(null);
+                  }}
+                  placeholder="Category / description (optional)"
+                  className="h-8 text-sm w-56"
+                />
+                <Button size="sm" onClick={() => handleSaveTypicalName(typical.id)}>
+                  <Check className="w-3.5 h-3.5 mr-1" />Save
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditingTypicalId(null)}>
+                  <X className="w-3.5 h-3.5" />
+                </Button>
               </div>
-
-              <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                {components.length} component{components.length !== 1 ? "s" : ""}
-              </span>
-
-              {/* Delete typical button — stop propagation so toggle doesn't fire */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDeleteTypical(typical.id);
-                }}
-                className="ml-2 p-1 text-muted-foreground hover:text-destructive transition-colors rounded"
-                title="Delete typical"
+            ) : (
+              <div
+                className="flex items-center gap-2 px-4 py-3 cursor-pointer select-none hover:bg-muted/40 transition-colors"
+                onClick={() => toggleExpand(typical.id)}
               >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
+                {isExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                )}
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-3">
+                    <span className="font-medium text-sm">{typical.name}</span>
+                    {typical.description && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {typical.description}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                  {components.length} component{components.length !== 1 ? "s" : ""}
+                </span>
+
+                {/* Edit name button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingTypicalId(typical.id);
+                    setEditName(typical.name);
+                    setEditDescription(typical.description ?? "");
+                  }}
+                  className="ml-1 p-1 text-muted-foreground hover:text-foreground transition-colors rounded opacity-0 group-hover:opacity-100"
+                  title="Edit name"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Delete typical button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteTypical(typical.id);
+                  }}
+                  className="p-1 text-muted-foreground hover:text-destructive transition-colors rounded"
+                  title="Delete typical"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {/* Expanded content */}
             {isExpanded && (
@@ -358,8 +442,15 @@ export function TypicalsTable({
                               <td className="px-3 py-1.5 font-mono text-[10px] text-muted-foreground">
                                 {comp.code ?? "—"}
                               </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums font-medium">
-                                {comp.quantity}
+                              <td className="px-2 py-1">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  defaultValue={comp.quantity}
+                                  onBlur={(e) => handleSaveComponentQty(comp.id, e.target.value)}
+                                  className="h-7 text-xs text-right w-20 ml-auto border-transparent hover:border-border focus:border-border"
+                                />
                               </td>
                               <td className="px-3 py-1.5 text-muted-foreground">
                                 {comp.uom ?? "—"}
