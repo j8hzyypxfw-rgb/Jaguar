@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Save } from "lucide-react";
+import { ArrowLeft, Save, Trash2 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,7 +29,10 @@ const STATUS_OPTIONS: { value: ProjectStatus; label: string }[] = [
 
 export function SettingsForm({ project }: { project: Project }) {
   const supabase = createClient();
+  const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmName, setConfirmName] = useState("");
 
   const [info, setInfo] = useState({
     name:            project.name,
@@ -105,6 +109,23 @@ export function SettingsForm({ project }: { project: Project }) {
       toast.error((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (confirmName.trim() !== project.name.trim()) {
+      toast.error("Project name doesn't match");
+      return;
+    }
+    setDeleting(true);
+    try {
+      const { error } = await supabase.from("projects").delete().eq("id", project.id);
+      if (error) throw error;
+      toast.success("Project deleted");
+      router.push("/projects");
+    } catch (e: unknown) {
+      toast.error((e as Error).message);
+      setDeleting(false);
     }
   }
 
@@ -365,6 +386,34 @@ export function SettingsForm({ project }: { project: Project }) {
                 {hint && <p className="text-[10px] text-muted-foreground mt-0.5">{hint}</p>}
               </div>
             ))}
+          </CardContent>
+        </Card>
+        {/* Danger Zone */}
+        <Card className="border-destructive/40">
+          <CardHeader>
+            <CardTitle className="text-base text-destructive">Danger Zone</CardTitle>
+            <CardDescription>
+              Permanently delete this project and all its data — estimates, line items, phases, BOM, everything. This cannot be undone.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div>
+              <Label className="text-xs">Type the project name to confirm: <span className="font-semibold text-foreground">{project.name}</span></Label>
+              <Input
+                className="mt-1 border-destructive/40 focus-visible:ring-destructive/40"
+                placeholder={project.name}
+                value={confirmName}
+                onChange={(e) => setConfirmName(e.target.value)}
+              />
+            </div>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleting || confirmName.trim() !== project.name.trim()}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {deleting ? "Deleting…" : "Delete Project"}
+            </Button>
           </CardContent>
         </Card>
       </div>
