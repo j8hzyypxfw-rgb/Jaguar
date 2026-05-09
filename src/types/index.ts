@@ -153,14 +153,23 @@ export interface Estimate {
 }
 
 // ---------------------------------------------------------------------------
-// Area / Zone
+// Area (structural container: Phase → Area → Section)
 // ---------------------------------------------------------------------------
 export interface Area {
   id: string;
-  estimate_id: string;
+  estimate_id: string | null;   // legacy; still set on insert for RLS compat
+  phase_id: string;             // NEW: areas belong to a phase
   name: string;
   sort_order: number;
   is_active: boolean;
+  // rollup totals (summed from sections below)
+  total_equipment: number;
+  total_excavation: number;
+  total_subs: number;
+  total_material: number;
+  total_mhrs: number;
+  total_installed: number;
+  sections?: Section[];
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +190,8 @@ export interface Phase {
   total_material: number;
   total_mhrs: number;
   total_installed: number;
-  sections?: Section[];
+  areas?: Area[];       // NEW: phases contain areas
+  sections?: Section[]; // legacy, kept for compat
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +199,8 @@ export interface Phase {
 // ---------------------------------------------------------------------------
 export interface Section {
   id: string;
-  phase_id: string;
+  phase_id: string | null;    // legacy (kept for rollup compat); set on insert
+  area_id: string | null;     // NEW: sections belong to an area
   section_number: number | null;
   name: string;
   sort_order: number;
@@ -232,7 +243,7 @@ export interface LineItem {
   total_installed: number;
   sort_order: number;
   notes: string | null;
-  // joined
+  // legacy per-area quantities (no longer used in new hierarchy)
   quantities?: LineItemQuantity[];
 }
 

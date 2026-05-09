@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/server";
 
@@ -54,29 +54,46 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         <Badge variant={project.status === "awarded" ? "outline" : "secondary"} className="capitalize">
           {project.status}
         </Badge>
+        <Link href={`/projects/${id}/bid-summary`} className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+          <FileText className="w-4 h-4 mr-2" /> Bid Summary
+        </Link>
+        <Link href={`/projects/${id}/bom`} className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+          <Package className="w-4 h-4 mr-2" /> BOM
+        </Link>
         <Link href={`/projects/${id}/settings`} className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
           <Settings2 className="w-4 h-4 mr-2" /> Settings
         </Link>
       </div>
 
       {/* Quick stats */}
-      {base && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          {[
-            { label: "Total Bid",    value: fmt(base.total_bid),      color: "text-primary" },
-            { label: "Direct Cost",  value: fmt(base.direct_cost),     color: "" },
-            { label: "Man Hours",    value: fmtHrs(base.total_mhrs),   color: "" },
-            { label: "Labor Rate",   value: `$${laborRate.toFixed(2)}/hr`, color: "" },
-          ].map(({ label, value, color }) => (
-            <Card key={label}>
-              <CardContent className="pt-4 pb-3">
-                <p className="text-xs text-muted-foreground">{label}</p>
-                <p className={`text-xl font-semibold mt-0.5 ${color}`}>{value}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {base && (() => {
+        const gpm = base.total_bid > 0 ? (base.profit_cost / base.total_bid) * 100 : 0;
+        const stats = [
+          { label: "Total Bid",       value: fmt(base.total_bid),            accent: true },
+          { label: "Material",        value: fmt(base.total_material),        accent: false },
+          { label: "Direct Costs",    value: fmt(base.direct_cost),           accent: false },
+          { label: "Indirect Costs",  value: fmt(base.indirect_labor_cost),   accent: false },
+          { label: "Man Hours",       value: fmtHrs(base.total_mhrs),         accent: false },
+          { label: "Profit",          value: fmt(base.profit_cost),           accent: false },
+          { label: "GPM",             value: `${gpm.toFixed(1)}%`,            accent: false, highlight: gpm >= 15 ? "text-emerald-600" : gpm >= 10 ? "text-amber-600" : "text-destructive" },
+        ];
+        return (
+          <Card className="mb-6">
+            <CardContent className="py-0">
+              <div className="flex divide-x">
+                {stats.map(({ label, value, accent, highlight }) => (
+                  <div key={label} className="flex-1 px-4 py-4 min-w-0">
+                    <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide truncate">{label}</p>
+                    <p className={`text-lg font-semibold mt-1 truncate ${highlight ?? (accent ? "text-primary" : "")}`}>
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Action cards */}
       <div className="grid grid-cols-3 gap-4">
@@ -86,18 +103,6 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           title="Takeoff &amp; Estimate"
           description="Enter quantities by phase, section, and area. Live pricing calculated automatically."
           primary
-        />
-        <ActionCard
-          href={`/projects/${id}/bid-summary`}
-          icon={FileText}
-          title="Bid Summary"
-          description="Full cost breakdown — job expense, overhead, profit, taxes, bond. Ready to print."
-        />
-        <ActionCard
-          href={`/projects/${id}/bom`}
-          icon={Package}
-          title="Bill of Materials"
-          description="Complete material list with quantities, unit costs, and totals. Filterable and printable."
         />
         <ActionCard
           href={`/projects/${id}/indirect`}

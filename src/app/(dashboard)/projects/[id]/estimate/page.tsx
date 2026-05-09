@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { projectToPricingConfig } from "@/lib/pricing";
 import { EstimateGrid } from "./EstimateGrid";
-import type { Project, Estimate, Area, Phase, Item, Typical, TypicalLineItem } from "@/types";
+import type { Project, Estimate, Phase, Item, Typical, TypicalLineItem } from "@/types";
 
 export default async function EstimatePage({
   params,
@@ -31,30 +31,19 @@ export default async function EstimatePage({
 
   const estimate: Estimate | null = estimates?.[0] ?? null;
 
-  let areas: Area[] = [];
   let phases: Phase[] = [];
 
   if (estimate) {
-    // Fetch areas
-    const { data: areasData } = await supabase
-      .from("areas")
-      .select("*")
-      .eq("estimate_id", estimate.id)
-      .eq("is_active", true)
-      .order("sort_order");
-
-    areas = areasData ?? [];
-
-    // Fetch phases → sections → line_items → quantities in one query
+    // Fetch Phase → Area → Section → LineItems (new 4-level hierarchy)
     const { data: phasesData } = await supabase
       .from("phases")
       .select(`
         *,
-        sections (
+        areas!areas_phase_id_fkey (
           *,
-          line_items (
+          sections!sections_area_id_fkey (
             *,
-            line_item_quantities ( * )
+            line_items (*)
           )
         )
       `)
@@ -62,16 +51,20 @@ export default async function EstimatePage({
       .order("sort_order");
 
     if (phasesData) {
-      // Sort nested arrays by sort_order
       phases = phasesData.map((phase: any) => ({
         ...phase,
-        sections: (phase.sections ?? [])
+        areas: (phase.areas ?? [])
           .sort((a: any, b: any) => a.sort_order - b.sort_order)
-          .map((section: any) => ({
-            ...section,
-            line_items: (section.line_items ?? []).sort(
-              (a: any, b: any) => a.sort_order - b.sort_order
-            ),
+          .map((area: any) => ({
+            ...area,
+            sections: (area.sections ?? [])
+              .sort((a: any, b: any) => a.sort_order - b.sort_order)
+              .map((section: any) => ({
+                ...section,
+                line_items: (section.line_items ?? []).sort(
+                  (a: any, b: any) => a.sort_order - b.sort_order
+                ),
+              })),
           })),
       }));
     }
@@ -86,7 +79,7 @@ export default async function EstimatePage({
 
   const items: Partial<Item>[] = itemsData ?? [];
 
-  // Load global typicals library (workspace_id is null for shared library)
+  // Load global typicals library
   const { data: typicalsData } = await supabase
     .from("typicals")
     .select("*")
@@ -115,7 +108,6 @@ export default async function EstimatePage({
     <EstimateGrid
       project={project as Project}
       estimate={estimate}
-      areas={areas}
       phases={phases as Phase[]}
       items={items as Item[]}
       typicals={typicals}

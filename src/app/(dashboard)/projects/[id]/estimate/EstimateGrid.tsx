@@ -17,8 +17,10 @@ import {
   ChevronDown,
   ChevronRight,
   Layers,
-  LayoutGrid,
   Check,
+  Pencil,
+  AlertTriangle,
+  MapPin,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,7 +35,6 @@ import type {
   Phase,
   Section,
   LineItem,
-  LineItemQuantity,
   PricingConfig,
   Item,
   Typical,
@@ -63,19 +64,60 @@ function fmtHrs(n: number) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Types for local state
+// Default sections seeded for every new area
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface LocalLineItem extends LineItem {
-  quantities: LineItemQuantity[];
-}
+const DEFAULT_SECTIONS = [
+  "Lighting",
+  "Lighting Control",
+  "Branch Power",
+  "HVAC",
+  "Equipment",
+  "Primary",
+  "Distribution",
+  "Em Distribution",
+  "Tele/Data",
+  "Fire Alarm",
+  "Audio/Visual",
+  "Security",
+  "Grounding",
+  "Temporary Power",
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Local types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface LocalLineItem extends LineItem {}
 
 interface LocalSection extends Section {
   line_items: LocalLineItem[];
 }
 
-interface LocalPhase extends Phase {
+interface LocalArea extends Area {
   sections: LocalSection[];
+}
+
+interface LocalPhase extends Phase {
+  areas: LocalArea[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function updateSection(
+  phases: LocalPhase[],
+  sectionId: string,
+  updater: (s: LocalSection) => LocalSection
+): LocalPhase[] {
+  return phases.map((ph) => ({
+    ...ph,
+    areas: ph.areas.map((a) => ({
+      ...a,
+      sections: a.sections.map((s) => (s.id === sectionId ? updater(s) : s)),
+    })),
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,7 +127,6 @@ interface LocalPhase extends Phase {
 interface EstimateGridProps {
   project: Project;
   estimate: Estimate | null;
-  areas: Area[];
   phases: Phase[];
   items: Item[];
   typicals: Typical[];
@@ -100,7 +141,6 @@ interface EstimateGridProps {
 export function EstimateGrid({
   project,
   estimate: initialEstimate,
-  areas: initialAreas,
   phases: initialPhases,
   items: allItems,
   typicals: allTypicals,
@@ -108,44 +148,82 @@ export function EstimateGrid({
   pricingConfig,
 }: EstimateGridProps) {
   const supabase = createClient();
+
   // ── Core state ──────────────────────────────────────────────────────────────
   const [estimate, setEstimate] = useState<Estimate | null>(initialEstimate);
-  const [areas, setAreas] = useState<Area[]>(initialAreas);
+
   const [phases, setPhases] = useState<LocalPhase[]>(() =>
-    (initialPhases as Phase[]).map((p) => ({
+    (initialPhases as any[]).map((p) => ({
       ...p,
-      sections: ((p.sections ?? []) as Section[]).map((s) => ({
-        ...s,
-        line_items: ((s.line_items ?? []) as LineItem[]).map((li) => ({
-          ...li,
-          quantities: (li.quantities ?? []) as LineItemQuantity[],
+      areas: ((p.areas ?? []) as any[])
+        .sort((a: any, b: any) => a.sort_order - b.sort_order)
+        .map((a: any) => ({
+          ...a,
+          sections: ((a.sections ?? []) as any[])
+            .sort((s1: any, s2: any) => s1.sort_order - s2.sort_order)
+            .map((s: any) => ({
+              ...s,
+              line_items: ((s.line_items ?? []) as LineItem[]).sort(
+                (l1: any, l2: any) => l1.sort_order - l2.sort_order
+              ),
+            })),
         })),
-      })),
     }))
   );
-  const [activePhaseIdx, setActivePhaseIdx] = useState(0);
 
-  // ── Modal / panel state ─────────────────────────────────────────────────────
-  const [areasModalOpen, setAreasModalOpen] = useState(false);
-  const [newAreaName, setNewAreaName] = useState("");
+  // Open/collapse for phases and areas
+  const [openPhaseIds, setOpenPhaseIds] = useState<Set<string>>(
+    () => new Set((initialPhases as Phase[]).map((p) => p.id))
+  );
+  const [openAreaIds, setOpenAreaIds] = useState<Set<string>>(() => {
+    const ids = new Set<string>();
+    for (const p of initialPhases as any[]) {
+      for (const a of p.areas ?? []) ids.add(a.id);
+    }
+    return ids;
+  });
 
-  // Add-phase inline
+  function togglePhase(id: string) {
+    setOpenPhaseIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function toggleArea(id: string) {
+    setOpenAreaIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // ── Phase CRUD state ────────────────────────────────────────────────────────
+  const [editingPhaseId, setEditingPhaseId] = useState<string | null>(null);
+  const [editPhaseName, setEditPhaseName] = useState("");
+  const [confirmDeletePhaseId, setConfirmDeletePhaseId] = useState<string | null>(null);
   const [addingPhase, setAddingPhase] = useState(false);
   const [newPhaseName, setNewPhaseName] = useState("");
 
-  // Add-section inline (keyed by phase id)
-  const [addingSectionPhaseId, setAddingSectionPhaseId] = useState<string | null>(null);
+  // ── Area CRUD state ─────────────────────────────────────────────────────────
+  const [addingAreaPhaseId, setAddingAreaPhaseId] = useState<string | null>(null);
+  const [newAreaName, setNewAreaName] = useState("");
+  const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
+  const [editAreaName, setEditAreaName] = useState("");
+  const [confirmDeleteAreaId, setConfirmDeleteAreaId] = useState<string | null>(null);
+
+  // ── Section CRUD state ──────────────────────────────────────────────────────
+  const [addingSectionAreaId, setAddingSectionAreaId] = useState<string | null>(null);
   const [newSectionName, setNewSectionName] = useState("");
 
-  // Add-line-item search (keyed by section id)
+  // ── Line-item panel state (global — only one open at a time) ────────────────
   const [addingItemSectionId, setAddingItemSectionId] = useState<string | null>(null);
-
-  // Insert-typical panel (keyed by section id)
+  const [addingItemGroupName, setAddingItemGroupName] = useState<string | null>(null);
   const [insertTypicalSectionId, setInsertTypicalSectionId] = useState<string | null>(null);
   const [typicalSearch, setTypicalSearch] = useState("");
   const [typicalMultiplier, setTypicalMultiplier] = useState("1");
 
-  // ── Debounce qty updates ────────────────────────────────────────────────────
+  // ── Debounce map ────────────────────────────────────────────────────────────
   const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -165,42 +243,6 @@ export function EstimateGrid({
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Areas management
-  // ─────────────────────────────────────────────────────────────────────────
-
-  async function handleAddArea() {
-    const name = newAreaName.trim();
-    if (!name) return;
-    const est = await ensureEstimate();
-    const { data, error } = await supabase
-      .from("areas")
-      .insert({ estimate_id: est.id, name, sort_order: areas.length })
-      .select()
-      .single();
-    if (error) { console.error(error); return; }
-    setAreas((prev) => [...prev, data as Area]);
-    setNewAreaName("");
-  }
-
-  async function handleDeleteArea(areaId: string) {
-    await supabase.from("areas").delete().eq("id", areaId);
-    setAreas((prev) => prev.filter((a) => a.id !== areaId));
-    // Remove quantities for this area from local state
-    setPhases((prev) =>
-      prev.map((ph) => ({
-        ...ph,
-        sections: ph.sections.map((sec) => ({
-          ...sec,
-          line_items: sec.line_items.map((li) => ({
-            ...li,
-            quantities: li.quantities.filter((q) => q.area_id !== areaId),
-          })),
-        })),
-      }))
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
   // Phase management
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -214,58 +256,194 @@ export function EstimateGrid({
       .select()
       .single();
     if (error) { console.error(error); return; }
-    const newPhase: LocalPhase = { ...(data as Phase), sections: [] };
+    const newPhase: LocalPhase = { ...(data as Phase), areas: [] };
     setPhases((prev) => [...prev, newPhase]);
-    setActivePhaseIdx(phases.length);
+    setOpenPhaseIds((prev) => new Set([...prev, newPhase.id]));
     setNewPhaseName("");
     setAddingPhase(false);
+  }
+
+  async function handleRenamePhase(phaseId: string) {
+    const name = editPhaseName.trim();
+    if (!name) return;
+    await supabase.from("phases").update({ name }).eq("id", phaseId);
+    setPhases((prev) => prev.map((p) => (p.id === phaseId ? { ...p, name } : p)));
+    setEditingPhaseId(null);
+  }
+
+  async function handleDeletePhase(phaseId: string) {
+    await supabase.from("phases").delete().eq("id", phaseId);
+    setPhases((prev) => prev.filter((p) => p.id !== phaseId));
+    setOpenPhaseIds((prev) => { const next = new Set(prev); next.delete(phaseId); return next; });
+    setConfirmDeletePhaseId(null);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Area management
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Seed default sections into a new area
+  async function seedDefaultSections(phaseId: string, areaId: string) {
+    const rows = DEFAULT_SECTIONS.map((name, i) => ({
+      phase_id: phaseId,  // kept for rollupEstimate compat
+      area_id: areaId,
+      name,
+      sort_order: i,
+    }));
+    const { data, error } = await supabase.from("sections").insert(rows).select();
+    if (error) { console.error("seed sections:", error); return; }
+    const newSections: LocalSection[] = (data as Section[]).map((s) => ({
+      ...s,
+      line_items: [],
+    }));
+    setPhases((prev) =>
+      prev.map((p) =>
+        p.id === phaseId
+          ? {
+              ...p,
+              areas: p.areas.map((a) =>
+                a.id === areaId ? { ...a, sections: newSections } : a
+              ),
+            }
+          : p
+      )
+    );
+  }
+
+  // Seed any area that came from DB with 0 sections (run once on mount)
+  const seededAreaRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const ph of phases) {
+      for (const area of ph.areas) {
+        if (area.sections.length === 0 && !seededAreaRef.current.has(area.id)) {
+          seededAreaRef.current.add(area.id);
+          seedDefaultSections(ph.id, area.id);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleAddArea(phaseId: string) {
+    const name = newAreaName.trim();
+    if (!name) return;
+    const est = await ensureEstimate();
+    const phase = phases.find((p) => p.id === phaseId);
+    const { data, error } = await supabase
+      .from("areas")
+      .insert({
+        estimate_id: est.id,
+        phase_id: phaseId,
+        name,
+        sort_order: phase?.areas.length ?? 0,
+      })
+      .select()
+      .single();
+    if (error) { console.error(error); return; }
+    const newArea: LocalArea = { ...(data as Area), sections: [] };
+    setPhases((prev) =>
+      prev.map((p) =>
+        p.id === phaseId ? { ...p, areas: [...p.areas, newArea] } : p
+      )
+    );
+    setOpenAreaIds((prev) => new Set([...prev, newArea.id]));
+    setNewAreaName("");
+    setAddingAreaPhaseId(null);
+    // Seed 14 default sections for this new area
+    seededAreaRef.current.add(newArea.id);
+    seedDefaultSections(phaseId, newArea.id);
+  }
+
+  async function handleRenameArea(areaId: string) {
+    const name = editAreaName.trim();
+    if (!name) return;
+    await supabase.from("areas").update({ name }).eq("id", areaId);
+    setPhases((prev) =>
+      prev.map((p) => ({
+        ...p,
+        areas: p.areas.map((a) => (a.id === areaId ? { ...a, name } : a)),
+      }))
+    );
+    setEditingAreaId(null);
+  }
+
+  async function handleDeleteArea(areaId: string) {
+    await supabase.from("areas").delete().eq("id", areaId);
+    setPhases((prev) =>
+      prev.map((p) => ({
+        ...p,
+        areas: p.areas.filter((a) => a.id !== areaId),
+      }))
+    );
+    setOpenAreaIds((prev) => { const next = new Set(prev); next.delete(areaId); return next; });
+    setConfirmDeleteAreaId(null);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Section management
   // ─────────────────────────────────────────────────────────────────────────
 
-  async function handleAddSection(phaseId: string) {
+  async function handleAddSection(areaId: string, phaseId: string) {
     const name = newSectionName.trim();
     if (!name) return;
-    const phaseIdx = phases.findIndex((p) => p.id === phaseId);
-    const phase = phases[phaseIdx];
+    let sortOrder = 0;
+    for (const ph of phases) {
+      if (ph.id === phaseId) {
+        const area = ph.areas.find((a) => a.id === areaId);
+        if (area) sortOrder = area.sections.length;
+      }
+    }
     const { data, error } = await supabase
       .from("sections")
-      .insert({
-        phase_id: phaseId,
-        name,
-        sort_order: phase.sections.length,
-      })
+      .insert({ phase_id: phaseId, area_id: areaId, name, sort_order: sortOrder })
       .select()
       .single();
     if (error) { console.error(error); return; }
-    const newSection: LocalSection = {
-      ...(data as Section),
-      line_items: [],
-    };
+    const newSection: LocalSection = { ...(data as Section), line_items: [] };
     setPhases((prev) =>
       prev.map((p) =>
         p.id === phaseId
-          ? { ...p, sections: [...p.sections, newSection] }
+          ? {
+              ...p,
+              areas: p.areas.map((a) =>
+                a.id === areaId
+                  ? { ...a, sections: [...a.sections, newSection] }
+                  : a
+              ),
+            }
           : p
       )
     );
     setNewSectionName("");
-    setAddingSectionPhaseId(null);
+    setAddingSectionAreaId(null);
+  }
+
+  async function handleDeleteSection(sectionId: string, areaId: string) {
+    await supabase.from("sections").delete().eq("id", sectionId);
+    setPhases((prev) =>
+      prev.map((p) => ({
+        ...p,
+        areas: p.areas.map((a) =>
+          a.id === areaId
+            ? { ...a, sections: a.sections.filter((s) => s.id !== sectionId) }
+            : a
+        ),
+      }))
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Line item management
   // ─────────────────────────────────────────────────────────────────────────
 
-  async function handleAddLineItem(sectionId: string, item: Item) {
-    const phaseIdx = phases.findIndex((p) =>
-      p.sections.some((s) => s.id === sectionId)
-    );
-    const section = phases[phaseIdx]?.sections.find((s) => s.id === sectionId);
-    if (!section) return;
-
+  async function handleAddLineItem(sectionId: string, item: Item, groupName?: string | null) {
+    let sortOrder = 0;
+    for (const ph of phases) {
+      for (const area of ph.areas) {
+        const sec = area.sections.find((s) => s.id === sectionId);
+        if (sec) { sortOrder = sec.line_items.length; break; }
+      }
+    }
     const { data, error } = await supabase
       .from("line_items")
       .insert({
@@ -281,72 +459,78 @@ export function EstimateGrid({
         unit_mhrs: item.man_hours,
         unit_ot_hrs: 0,
         total_qty: 0,
-        sort_order: section.line_items.length,
+        sort_order: sortOrder,
         price_source: "database",
+        typical_name: groupName ?? null,
       })
       .select()
       .single();
-
     if (error) { console.error(error); return; }
-
-    const newLI: LocalLineItem = { ...(data as LineItem), quantities: [] };
+    const newLI: LocalLineItem = data as LocalLineItem;
     setPhases((prev) =>
-      prev.map((p) => ({
-        ...p,
-        sections: p.sections.map((s) =>
-          s.id === sectionId
-            ? { ...s, line_items: [...s.line_items, newLI] }
-            : s
-        ),
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: [...s.line_items, newLI],
       }))
     );
-    setAddingItemSectionId(null);
   }
 
   async function handleDeleteLineItem(sectionId: string, lineItemId: string) {
     await supabase.from("line_items").delete().eq("id", lineItemId);
     setPhases((prev) =>
-      prev.map((p) => ({
-        ...p,
-        sections: p.sections.map((s) =>
-          s.id === sectionId
-            ? { ...s, line_items: s.line_items.filter((li) => li.id !== lineItemId) }
-            : s
-        ),
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: s.line_items.filter((li) => li.id !== lineItemId),
       }))
     );
     await rollupEstimate();
   }
 
+  async function handleDeleteLineItems(sectionId: string, lineItemIds: string[]) {
+    await supabase.from("line_items").delete().in("id", lineItemIds);
+    setPhases((prev) =>
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: s.line_items.filter((li) => !lineItemIds.includes(li.id)),
+      }))
+    );
+    await rollupEstimate();
+  }
+
+  async function handleRenameLineItems(sectionId: string, lineItemIds: string[], newGroupName: string) {
+    await supabase.from("line_items").update({ typical_name: newGroupName }).in("id", lineItemIds);
+    setPhases((prev) =>
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: s.line_items.map((li) =>
+          lineItemIds.includes(li.id) ? ({ ...li, typical_name: newGroupName } as any) : li
+        ),
+      }))
+    );
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
-  // Insert typical — explodes all typical_line_items into a section
+  // Insert typical — explodes typical_line_items into section
   // ─────────────────────────────────────────────────────────────────────────
 
   const handleInsertTypical = useCallback(
     async (sectionId: string, typical: Typical, multiplier: number) => {
-      const components = allTypicalLineItems.filter(
-        (tli) => tli.typical_id === typical.id
-      );
+      const components = allTypicalLineItems.filter((tli) => tli.typical_id === typical.id);
       if (components.length === 0) return;
 
-      // Find the section to get current line count for sort_order
       let currentSortBase = 0;
       for (const ph of phases) {
-        for (const sec of ph.sections) {
-          if (sec.id === sectionId) {
-            currentSortBase = sec.line_items.length;
-          }
+        for (const area of ph.areas) {
+          const sec = area.sections.find((s) => s.id === sectionId);
+          if (sec) { currentSortBase = sec.line_items.length; break; }
         }
       }
 
-      // Look up DB item for each component to get unit costs
       const insertedLineItems: LocalLineItem[] = [];
 
       for (let i = 0; i < components.length; i++) {
         const comp = components[i];
-        // Find matching item in DB for unit costs
         const dbItem = allItems.find((it) => it.id === comp.item_id);
-
         const qty = comp.quantity * multiplier;
 
         const unitEquipment  = dbItem?.equipment_cost  ?? 0;
@@ -357,14 +541,7 @@ export function EstimateGrid({
 
         const totals = calcLineItemTotals(
           qty,
-          {
-            equipment:  unitEquipment,
-            excavation: unitExcavation,
-            sub:        unitSub,
-            material:   unitMaterial,
-            mhrs:       unitMhrs,
-            ot_hrs:     0,
-          },
+          { equipment: unitEquipment, excavation: unitExcavation, sub: unitSub, material: unitMaterial, mhrs: unitMhrs, ot_hrs: 0 },
           pricingConfig
         );
 
@@ -392,142 +569,65 @@ export function EstimateGrid({
           .single();
 
         if (error) { console.error(error); continue; }
-
-        const newLI: LocalLineItem = { ...(data as LineItem), quantities: [] };
-
-        // If areas exist, upsert a quantity row for the first area
-        if (areas.length > 0) {
-          const firstArea = areas[0];
-          const { data: qData } = await supabase
-            .from("line_item_quantities")
-            .upsert(
-              { line_item_id: newLI.id, area_id: firstArea.id, quantity: qty },
-              { onConflict: "line_item_id,area_id" }
-            )
-            .select()
-            .single();
-          if (qData) {
-            newLI.quantities = [qData as LineItemQuantity];
-          }
-        }
-
-        insertedLineItems.push(newLI);
+        insertedLineItems.push(data as LocalLineItem);
       }
 
       if (insertedLineItems.length === 0) return;
 
       setPhases((prev) =>
-        prev.map((p) => ({
-          ...p,
-          sections: p.sections.map((s) =>
-            s.id === sectionId
-              ? { ...s, line_items: [...s.line_items, ...insertedLineItems] }
-              : s
-          ),
+        updateSection(prev, sectionId, (s) => ({
+          ...s,
+          line_items: [...s.line_items, ...insertedLineItems],
         }))
       );
       await rollupEstimate();
-
       setInsertTypicalSectionId(null);
       setTypicalSearch("");
       setTypicalMultiplier("1");
     },
-    [allTypicalLineItems, allItems, areas, phases, pricingConfig, supabase]
+    [allTypicalLineItems, allItems, phases, pricingConfig, supabase]
   );
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Quantity input handling (debounced upsert)
+  // Quantity change (debounced direct update to total_qty)
   // ─────────────────────────────────────────────────────────────────────────
 
-  function handleQtyChange(
-    sectionId: string,
-    lineItemId: string,
-    areaId: string,
-    rawValue: string
-  ) {
+  function handleQtyChange(sectionId: string, lineItemId: string, rawValue: string) {
     const qty = rawValue === "" ? 0 : parseFloat(rawValue) || 0;
 
     // Optimistic local update
     setPhases((prev) =>
-      prev.map((p) => ({
-        ...p,
-        sections: p.sections.map((s) => {
-          if (s.id !== sectionId) return s;
-          return {
-            ...s,
-            line_items: s.line_items.map((li) => {
-              if (li.id !== lineItemId) return li;
-              const existingIdx = li.quantities.findIndex(
-                (q) => q.area_id === areaId
-              );
-              let newQtys: LineItemQuantity[];
-              if (existingIdx >= 0) {
-                newQtys = li.quantities.map((q, i) =>
-                  i === existingIdx ? { ...q, quantity: qty } : q
-                );
-              } else {
-                newQtys = [
-                  ...li.quantities,
-                  {
-                    id: `tmp-${lineItemId}-${areaId}`,
-                    line_item_id: lineItemId,
-                    area_id: areaId,
-                    quantity: qty,
-                  },
-                ];
-              }
-              const totalQty = newQtys.reduce((sum, q) => sum + q.quantity, 0);
-              const totals = calcLineItemTotals(
-                totalQty,
-                {
-                  equipment: li.unit_equipment,
-                  excavation: li.unit_excavation,
-                  sub: li.unit_sub,
-                  material: li.unit_material,
-                  mhrs: li.unit_mhrs,
-                  ot_hrs: li.unit_ot_hrs,
-                },
-                pricingConfig
-              );
-              return {
-                ...li,
-                quantities: newQtys,
-                total_qty: totalQty,
-                ...totals,
-              };
-            }),
-          };
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: s.line_items.map((li) => {
+          if (li.id !== lineItemId) return li;
+          const totals = calcLineItemTotals(
+            qty,
+            {
+              equipment:  li.unit_equipment,
+              excavation: li.unit_excavation,
+              sub:        li.unit_sub,
+              material:   li.unit_material,
+              mhrs:       li.unit_mhrs,
+              ot_hrs:     li.unit_ot_hrs,
+            },
+            pricingConfig
+          );
+          return { ...li, total_qty: qty, ...totals };
         }),
       }))
     );
 
     // Debounced DB write
-    const key = `${lineItemId}:${areaId}`;
-    const existing = debounceTimers.current.get(key);
+    const existing = debounceTimers.current.get(lineItemId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(async () => {
-      debounceTimers.current.delete(key);
-      // Upsert quantity
-      await supabase.from("line_item_quantities").upsert(
-        { line_item_id: lineItemId, area_id: areaId, quantity: qty },
-        { onConflict: "line_item_id,area_id" }
-      );
-      // Compute new total qty from DB to be safe
-      const { data: qtys } = await supabase
-        .from("line_item_quantities")
-        .select("quantity")
-        .eq("line_item_id", lineItemId);
-      const totalQty = (qtys ?? []).reduce(
-        (sum: number, r: { quantity: number }) => sum + (r.quantity ?? 0),
-        0
-      );
-      // Get unit costs from the line item DB row directly
+      debounceTimers.current.delete(lineItemId);
       const { data: liRow } = await supabase
         .from("line_items")
         .select("unit_equipment, unit_excavation, unit_sub, unit_material, unit_mhrs, unit_ot_hrs")
         .eq("id", lineItemId)
         .single();
-
       const unitCosts = {
         equipment:  liRow?.unit_equipment  ?? 0,
         excavation: liRow?.unit_excavation ?? 0,
@@ -536,26 +636,87 @@ export function EstimateGrid({
         mhrs:       liRow?.unit_mhrs       ?? 0,
         ot_hrs:     liRow?.unit_ot_hrs     ?? 0,
       };
-      const totals = calcLineItemTotals(totalQty, unitCosts, pricingConfig);
-
-      // Update line_items totals in DB
+      const totals = calcLineItemTotals(qty, unitCosts, pricingConfig);
       await supabase
         .from("line_items")
-        .update({ total_qty: totalQty, ...totals })
+        .update({ total_qty: qty, ...totals })
         .eq("id", lineItemId);
-
-      // Roll up estimate totals from DB (always accurate)
       await rollupEstimate();
     }, 500);
-    debounceTimers.current.set(key, timer);
+    debounceTimers.current.set(lineItemId, timer);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Roll up all line-item totals into the estimates record
-  // Called after any qty or line-item change so dashboard + bid summary stay current
+  // Line item field editing (description, UOM, unit costs)
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Reads totals directly from DB so it's always accurate regardless of local state timing
+  async function handleLineItemFieldChange(
+    sectionId: string,
+    lineItemId: string,
+    field: string,
+    value: string | number | null
+  ) {
+    const isCostField = ["unit_equipment", "unit_excavation", "unit_sub", "unit_material", "unit_mhrs", "unit_ot_hrs"].includes(field);
+    const needsRecalc = isCostField;
+
+    setPhases((prev) =>
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: s.line_items.map((li) => {
+          if (li.id !== lineItemId) return li;
+          const updated = { ...li, [field]: value };
+          if (needsRecalc) {
+            const totals = calcLineItemTotals(
+              li.total_qty,
+              {
+                equipment:  field === "unit_equipment"  ? (value as number) : li.unit_equipment,
+                excavation: field === "unit_excavation" ? (value as number) : li.unit_excavation,
+                sub:        field === "unit_sub"        ? (value as number) : li.unit_sub,
+                material:   field === "unit_material"   ? (value as number) : li.unit_material,
+                mhrs:       field === "unit_mhrs"       ? (value as number) : li.unit_mhrs,
+                ot_hrs:     field === "unit_ot_hrs"     ? (value as number) : li.unit_ot_hrs,
+              },
+              pricingConfig
+            );
+            return { ...updated, ...totals };
+          }
+          return updated;
+        }),
+      }))
+    );
+
+    const { error } = await supabase.from("line_items").update({ [field]: value }).eq("id", lineItemId);
+    if (error) return;
+
+    if (needsRecalc) {
+      const { data: liRow } = await supabase
+        .from("line_items")
+        .select("total_qty, unit_equipment, unit_excavation, unit_sub, unit_material, unit_mhrs, unit_ot_hrs")
+        .eq("id", lineItemId)
+        .single();
+      if (liRow) {
+        const totals = calcLineItemTotals(
+          liRow.total_qty ?? 0,
+          {
+            equipment:  liRow.unit_equipment  ?? 0,
+            excavation: liRow.unit_excavation ?? 0,
+            sub:        liRow.unit_sub        ?? 0,
+            material:   liRow.unit_material   ?? 0,
+            mhrs:       liRow.unit_mhrs       ?? 0,
+            ot_hrs:     liRow.unit_ot_hrs     ?? 0,
+          },
+          pricingConfig
+        );
+        await supabase.from("line_items").update(totals).eq("id", lineItemId);
+      }
+      await rollupEstimate();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Rollup
+  // ─────────────────────────────────────────────────────────────────────────
+
   async function rollupEstimate(estimateId?: string) {
     const eid = estimateId ?? estimate?.id;
     if (!eid) return;
@@ -563,7 +724,8 @@ export function EstimateGrid({
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-
+  // Filtered typicals
+  // ─────────────────────────────────────────────────────────────────────────
 
   const filteredTypicals = useMemo(() => {
     if (!typicalSearch.trim()) return allTypicals.slice(0, 50);
@@ -579,14 +741,12 @@ export function EstimateGrid({
   }, [allTypicals, typicalSearch]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Phase totals (computed from local line items)
+  // Totals helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  function computePhaseTotals(phase: LocalPhase) {
-    let mat = 0,
-      hrs = 0,
-      installed = 0;
-    for (const sec of phase.sections) {
+  function computeAreaTotals(area: LocalArea) {
+    let mat = 0, hrs = 0, installed = 0;
+    for (const sec of area.sections) {
       for (const li of sec.line_items) {
         mat += li.total_material;
         hrs += li.total_mhrs;
@@ -596,12 +756,16 @@ export function EstimateGrid({
     return { mat, hrs, installed };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Active phase
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const safeActiveIdx = Math.min(activePhaseIdx, phases.length - 1);
-  const activePhase = phases[safeActiveIdx] ?? null;
+  function computePhaseTotals(phase: LocalPhase) {
+    let mat = 0, hrs = 0, installed = 0;
+    for (const area of phase.areas) {
+      const t = computeAreaTotals(area);
+      mat += t.mat;
+      hrs += t.hrs;
+      installed += t.installed;
+    }
+    return { mat, hrs, installed };
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -617,234 +781,350 @@ export function EstimateGrid({
         >
           <ArrowLeft className="w-4 h-4" />
         </Link>
-
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2">
-            <span className="text-xs text-muted-foreground truncate">
-              {project.name}
-            </span>
+            <span className="text-xs text-muted-foreground truncate">{project.name}</span>
             <span className="text-xs text-muted-foreground">/</span>
             <h1 className="text-sm font-semibold">Takeoff &amp; Estimate</h1>
           </div>
         </div>
-
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setAreasModalOpen(true)}
-        >
-          <LayoutGrid className="w-3.5 h-3.5 mr-1.5" />
-          Manage Areas
-        </Button>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setAddingPhase(true);
-            setNewPhaseName("");
-          }}
+          onClick={() => { setAddingPhase(true); setNewPhaseName(""); }}
         >
           <Plus className="w-3.5 h-3.5 mr-1.5" />
           Add Phase
         </Button>
       </header>
 
-      {/* ── Phase tabs ──────────────────────────────────────────────────────── */}
-      <div className="flex items-end gap-0 px-4 border-b bg-card shrink-0 overflow-x-auto">
-        {phases.map((phase, idx) => {
-          const { mat, hrs, installed } = computePhaseTotals(phase);
-          return (
-            <button
-              key={phase.id}
-              onClick={() => setActivePhaseIdx(idx)}
-              className={cn(
-                "flex flex-col items-start px-4 py-2 text-xs border-b-2 transition-colors whitespace-nowrap shrink-0",
-                idx === safeActiveIdx
-                  ? "border-primary text-foreground font-medium"
-                  : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground"
-              )}
-            >
-              <span>{phase.name}</span>
-              {installed > 0 && (
-                <span className="text-[10px] text-muted-foreground">
-                  {fmt$(installed)}
-                </span>
-              )}
-            </button>
-          );
-        })}
-
-        {/* Inline add-phase input */}
-        {addingPhase && (
-          <div className="flex items-center gap-1 px-2 py-1.5 shrink-0">
-            <Input
-              autoFocus
-              value={newPhaseName}
-              onChange={(e) => setNewPhaseName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAddPhase();
-                if (e.key === "Escape") setAddingPhase(false);
-              }}
-              placeholder="Phase name…"
-              className="h-6 text-xs w-36 px-2"
-            />
-            <Button size="icon-xs" onClick={handleAddPhase}>
-              <Check className="w-3 h-3" />
-            </Button>
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => setAddingPhase(false)}
-            >
-              <X className="w-3 h-3" />
-            </Button>
-          </div>
-        )}
-
-        {phases.length === 0 && !addingPhase && (
-          <div className="px-4 py-3 text-xs text-muted-foreground italic">
-            No phases yet — click &ldquo;Add Phase&rdquo; to start
-          </div>
-        )}
-      </div>
-
-      {/* ── Main content area ────────────────────────────────────────────────── */}
+      {/* ── Main content ─────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
-        {!activePhase ? (
-          /* Empty state */
+        {phases.length === 0 && !addingPhase ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center p-8">
             <Layers className="w-12 h-12 text-muted-foreground/40" />
             <div>
               <p className="font-medium">No phases yet</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                Add your first phase to get started
-              </p>
+              <p className="text-sm text-muted-foreground mt-1">Add your first phase to get started</p>
             </div>
-            <Button
-              onClick={() => {
-                setAddingPhase(true);
-                setNewPhaseName("");
-              }}
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Phase
+            <Button onClick={() => { setAddingPhase(true); setNewPhaseName(""); }}>
+              <Plus className="w-4 h-4 mr-2" /> Add Phase
             </Button>
           </div>
         ) : (
-          <div className="p-4 space-y-3">
-            {/* Add section button */}
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{activePhase.name}</span>
-              {addingSectionPhaseId !== activePhase.id ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setAddingSectionPhaseId(activePhase.id);
-                    setNewSectionName("");
+          <div className="p-4 space-y-4">
+            {/* Add phase inline input */}
+            {addingPhase && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-card">
+                <Input
+                  autoFocus
+                  value={newPhaseName}
+                  onChange={(e) => setNewPhaseName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddPhase();
+                    if (e.key === "Escape") setAddingPhase(false);
                   }}
-                >
-                  <Plus className="w-3.5 h-3.5 mr-1.5" />
-                  Add Section
-                </Button>
-              ) : (
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    autoFocus
-                    value={newSectionName}
-                    onChange={(e) => setNewSectionName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddSection(activePhase.id);
-                      if (e.key === "Escape") setAddingSectionPhaseId(null);
-                    }}
-                    placeholder="Section name…"
-                    className="h-7 text-xs w-44 px-2"
-                  />
-                  <Button
-                    size="icon-xs"
-                    onClick={() => handleAddSection(activePhase.id)}
-                  >
-                    <Check className="w-3 h-3" />
-                  </Button>
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    onClick={() => setAddingSectionPhaseId(null)}
-                  >
-                    <X className="w-3 h-3" />
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            {/* Sections */}
-            {activePhase.sections.length === 0 ? (
-              <div className="rounded-lg border border-dashed p-8 text-center">
-                <p className="text-sm text-muted-foreground">
-                  No sections in this phase. Add a section above.
-                </p>
-              </div>
-            ) : (
-              activePhase.sections.map((section) => (
-                <SectionBlock
-                  key={section.id}
-                  section={section}
-                  areas={areas}
-                  pricingConfig={pricingConfig}
-                  addingItemSectionId={addingItemSectionId}
-                  filteredTypicals={filteredTypicals}
-                  typicalSearch={typicalSearch}
-                  typicalMultiplier={typicalMultiplier}
-                  insertTypicalSectionId={insertTypicalSectionId}
-                  onQtyChange={(liId, areaId, val) =>
-                    handleQtyChange(section.id, liId, areaId, val)
-                  }
-                  onAddLineItemClick={() => {
-                    setAddingItemSectionId(section.id);
-                    setInsertTypicalSectionId(null);
-                                  }}
-                  onCancelAddItem={() => setAddingItemSectionId(null)}
-                  onSelectItem={(item) =>
-                    handleAddLineItem(section.id, item)
-                  }
-                  onDeleteLineItem={(liId) =>
-                    handleDeleteLineItem(section.id, liId)
-                  }
-                  onInsertTypicalClick={() => {
-                    setInsertTypicalSectionId(section.id);
-                    setAddingItemSectionId(null);
-                    setTypicalSearch("");
-                    setTypicalMultiplier("1");
-                  }}
-                  onCancelInsertTypical={() => setInsertTypicalSectionId(null)}
-                  onSelectTypical={(typical) =>
-                    handleInsertTypical(
-                      section.id,
-                      typical,
-                      parseFloat(typicalMultiplier) || 1
-                    )
-                  }
-                  onTypicalSearchChange={(v) => setTypicalSearch(v)}
-                  onTypicalMultiplierChange={(v) => setTypicalMultiplier(v)}
+                  placeholder="Phase name…"
+                  className="h-7 text-xs w-48 px-2"
                 />
-              ))
+                <Button size="icon-xs" onClick={handleAddPhase}><Check className="w-3 h-3" /></Button>
+                <Button size="icon-xs" variant="ghost" onClick={() => setAddingPhase(false)}><X className="w-3 h-3" /></Button>
+              </div>
             )}
+
+            {/* Phase blocks */}
+            {phases.map((phase) => {
+              const isPhaseOpen = openPhaseIds.has(phase.id);
+              const { hrs: phHrs, installed: phInstalled } = computePhaseTotals(phase);
+
+              return (
+                <div key={phase.id} className="rounded-lg border bg-card">
+                  {/* Phase header */}
+                  {confirmDeletePhaseId === phase.id ? (
+                    <div className="flex items-center gap-3 px-4 py-3 bg-destructive/10 border-b">
+                      <AlertTriangle className="w-4 h-4 text-destructive shrink-0" />
+                      <p className="text-sm flex-1">
+                        <span className="font-semibold">Delete "{phase.name}"?</span>
+                        <span className="text-muted-foreground ml-2">All areas, sections, and line items will be permanently deleted.</span>
+                      </p>
+                      <Button size="sm" variant="destructive" onClick={() => handleDeletePhase(phase.id)}>Delete</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmDeletePhaseId(null)}>Cancel</Button>
+                    </div>
+                  ) : editingPhaseId === phase.id ? (
+                    <div className="flex items-center gap-2 px-4 py-2.5 bg-muted/20 border-b">
+                      <Input
+                        autoFocus
+                        value={editPhaseName}
+                        onChange={(e) => setEditPhaseName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRenamePhase(phase.id);
+                          if (e.key === "Escape") setEditingPhaseId(null);
+                        }}
+                        className="h-7 text-sm font-semibold w-52 px-2"
+                      />
+                      <Button size="icon-xs" onClick={() => handleRenamePhase(phase.id)}><Check className="w-3 h-3" /></Button>
+                      <Button size="icon-xs" variant="ghost" onClick={() => setEditingPhaseId(null)}><X className="w-3 h-3" /></Button>
+                    </div>
+                  ) : (
+                    <div
+                      className="group/phase flex items-center gap-2 px-4 py-3 bg-muted/20 border-b cursor-pointer select-none hover:bg-muted/40 transition-colors"
+                      onClick={() => togglePhase(phase.id)}
+                    >
+                      {isPhaseOpen
+                        ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                        : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />}
+                      <span className="font-semibold text-sm flex-1">{phase.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {phase.areas.length} area{phase.areas.length !== 1 ? "s" : ""}
+                      </span>
+                      {phInstalled > 0 && (
+                        <span className="text-xs text-muted-foreground tabular-nums">{fmt$(phInstalled)}</span>
+                      )}
+                      <span className="text-xs text-muted-foreground tabular-nums">{fmtHrs(phHrs)} hrs</span>
+                      <div className="flex items-center gap-1 opacity-0 group-hover/phase:opacity-100 transition-opacity ml-2">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setEditingPhaseId(phase.id); setEditPhaseName(phase.name); }}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                          title="Rename phase"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setConfirmDeletePhaseId(phase.id); }}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-destructive"
+                          title="Delete phase"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Phase body */}
+                  {isPhaseOpen && (
+                    <div className="p-3 space-y-2">
+                      {/* Add area control */}
+                      <div className="flex justify-end">
+                        {addingAreaPhaseId !== phase.id ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAddingAreaPhaseId(phase.id);
+                              setNewAreaName("");
+                            }}
+                          >
+                            <MapPin className="w-3.5 h-3.5 mr-1.5" />
+                            Add Area
+                          </Button>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              autoFocus
+                              value={newAreaName}
+                              onChange={(e) => setNewAreaName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleAddArea(phase.id);
+                                if (e.key === "Escape") setAddingAreaPhaseId(null);
+                              }}
+                              placeholder="Area name… (e.g. Building A, Floor 1)"
+                              className="h-7 text-xs w-56 px-2"
+                            />
+                            <Button size="icon-xs" onClick={() => handleAddArea(phase.id)}><Check className="w-3 h-3" /></Button>
+                            <Button size="icon-xs" variant="ghost" onClick={() => setAddingAreaPhaseId(null)}><X className="w-3 h-3" /></Button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Areas */}
+                      {phase.areas.length === 0 ? (
+                        <div className="rounded-lg border border-dashed p-6 text-center">
+                          <p className="text-sm text-muted-foreground">
+                            No areas yet. Add an area to begin adding sections and line items.
+                          </p>
+                        </div>
+                      ) : (
+                        phase.areas.map((area) => {
+                          const isAreaOpen = openAreaIds.has(area.id);
+                          const { hrs: aHrs, installed: aInstalled } = computeAreaTotals(area);
+
+                          return (
+                            <div key={area.id} className="rounded-lg border bg-muted/10">
+                              {/* Area header */}
+                              {confirmDeleteAreaId === area.id ? (
+                                <div className="flex items-center gap-3 px-3 py-2 bg-destructive/10 border-b rounded-t-lg">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />
+                                  <p className="text-xs flex-1">
+                                    <span className="font-semibold">Delete "{area.name}"?</span>
+                                    <span className="text-muted-foreground ml-2">All sections and line items will be deleted.</span>
+                                  </p>
+                                  <Button size="xs" variant="destructive" onClick={() => handleDeleteArea(area.id)}>Delete</Button>
+                                  <Button size="xs" variant="ghost" onClick={() => setConfirmDeleteAreaId(null)}>Cancel</Button>
+                                </div>
+                              ) : editingAreaId === area.id ? (
+                                <div className="flex items-center gap-2 px-3 py-2 bg-muted/20 border-b rounded-t-lg">
+                                  <Input
+                                    autoFocus
+                                    value={editAreaName}
+                                    onChange={(e) => setEditAreaName(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") handleRenameArea(area.id);
+                                      if (e.key === "Escape") setEditingAreaId(null);
+                                    }}
+                                    className="h-6 text-xs font-semibold w-44 px-2"
+                                  />
+                                  <Button size="icon-xs" onClick={() => handleRenameArea(area.id)}><Check className="w-3 h-3" /></Button>
+                                  <Button size="icon-xs" variant="ghost" onClick={() => setEditingAreaId(null)}><X className="w-3 h-3" /></Button>
+                                </div>
+                              ) : (
+                                <div
+                                  className="group/area flex items-center gap-2 px-3 py-2 bg-blue-50/50 dark:bg-blue-950/20 border-b cursor-pointer select-none hover:bg-blue-100/50 dark:hover:bg-blue-950/30 transition-colors rounded-t-lg"
+                                  onClick={() => toggleArea(area.id)}
+                                >
+                                  {isAreaOpen
+                                    ? <ChevronDown className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                    : <ChevronRight className="w-3.5 h-3.5 text-blue-600 shrink-0" />}
+                                  <MapPin className="w-3 h-3 text-blue-500 shrink-0" />
+                                  <span className="font-semibold text-xs text-blue-900 dark:text-blue-200 flex-1">{area.name}</span>
+                                  <span className="text-[10px] text-blue-600/70">
+                                    {area.sections.length} section{area.sections.length !== 1 ? "s" : ""}
+                                  </span>
+                                  {aInstalled > 0 && (
+                                    <span className="text-xs text-blue-700 tabular-nums font-medium">{fmt$(aInstalled)}</span>
+                                  )}
+                                  <span className="text-xs text-blue-600/80 tabular-nums">{fmtHrs(aHrs)} hrs</span>
+                                  <div className="flex items-center gap-0.5 opacity-0 group-hover/area:opacity-100 transition-opacity ml-1">
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setEditingAreaId(area.id); setEditAreaName(area.name); }}
+                                      className="p-0.5 rounded hover:bg-blue-100 text-blue-400 hover:text-blue-700"
+                                      title="Rename area"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteAreaId(area.id); }}
+                                      className="p-0.5 rounded hover:bg-blue-100 text-blue-400 hover:text-destructive"
+                                      title="Delete area"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Area body */}
+                              {isAreaOpen && (
+                                <div className="p-2 space-y-2">
+                                  {/* Add section control */}
+                                  <div className="flex justify-end">
+                                    {addingSectionAreaId !== area.id ? (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => { setAddingSectionAreaId(area.id); setNewSectionName(""); }}
+                                      >
+                                        <Plus className="w-3 h-3 mr-1" /> Add Section
+                                      </Button>
+                                    ) : (
+                                      <div className="flex items-center gap-1.5">
+                                        <Input
+                                          autoFocus
+                                          value={newSectionName}
+                                          onChange={(e) => setNewSectionName(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Enter") handleAddSection(area.id, phase.id);
+                                            if (e.key === "Escape") setAddingSectionAreaId(null);
+                                          }}
+                                          placeholder="Section name…"
+                                          className="h-6 text-xs w-44 px-2"
+                                        />
+                                        <Button size="icon-xs" onClick={() => handleAddSection(area.id, phase.id)}><Check className="w-3 h-3" /></Button>
+                                        <Button size="icon-xs" variant="ghost" onClick={() => setAddingSectionAreaId(null)}><X className="w-3 h-3" /></Button>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Section blocks */}
+                                  {area.sections.length === 0 ? (
+                                    <div className="rounded border border-dashed p-4 text-center">
+                                      <p className="text-xs text-muted-foreground">No sections yet. Add a section above.</p>
+                                    </div>
+                                  ) : (
+                                    area.sections.map((section) => (
+                                      <SectionBlock
+                                        key={section.id}
+                                        section={section}
+                                        pricingConfig={pricingConfig}
+                                        addingItemSectionId={addingItemSectionId}
+                                        addingItemGroupName={addingItemGroupName}
+                                        filteredTypicals={filteredTypicals}
+                                        typicalSearch={typicalSearch}
+                                        typicalMultiplier={typicalMultiplier}
+                                        insertTypicalSectionId={insertTypicalSectionId}
+                                        onQtyChange={(liId, val) =>
+                                          handleQtyChange(section.id, liId, val)
+                                        }
+                                        onLineItemFieldChange={(liId, field, val) =>
+                                          handleLineItemFieldChange(section.id, liId, field, val)
+                                        }
+                                        onDeleteSection={() =>
+                                          handleDeleteSection(section.id, area.id)
+                                        }
+                                        onAddLineItemClick={(groupName) => {
+                                          setAddingItemSectionId(section.id);
+                                          setAddingItemGroupName(groupName ?? null);
+                                          setInsertTypicalSectionId(null);
+                                        }}
+                                        onCancelAddItem={() => {
+                                          setAddingItemSectionId(null);
+                                          setAddingItemGroupName(null);
+                                        }}
+                                        onSelectItem={(item, groupName) =>
+                                          handleAddLineItem(section.id, item, groupName)
+                                        }
+                                        onDeleteLineItem={(liId) =>
+                                          handleDeleteLineItem(section.id, liId)
+                                        }
+                                        onDeleteLineItems={(liIds) =>
+                                          handleDeleteLineItems(section.id, liIds)
+                                        }
+                                        onRenameLineItems={(liIds, name) =>
+                                          handleRenameLineItems(section.id, liIds, name)
+                                        }
+                                        onInsertTypicalClick={() => {
+                                          setInsertTypicalSectionId(section.id);
+                                          setAddingItemSectionId(null);
+                                          setTypicalSearch("");
+                                          setTypicalMultiplier("1");
+                                        }}
+                                        onCancelInsertTypical={() => setInsertTypicalSectionId(null)}
+                                        onSelectTypical={(typical) =>
+                                          handleInsertTypical(
+                                            section.id,
+                                            typical,
+                                            parseFloat(typicalMultiplier) || 1
+                                          )
+                                        }
+                                        onTypicalSearchChange={(v) => setTypicalSearch(v)}
+                                        onTypicalMultiplierChange={(v) => setTypicalMultiplier(v)}
+                                      />
+                                    ))
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
-
-      {/* ── Areas modal ─────────────────────────────────────────────────────── */}
-      {areasModalOpen && (
-        <AreasModal
-          areas={areas}
-          newAreaName={newAreaName}
-          onNewAreaNameChange={setNewAreaName}
-          onAddArea={handleAddArea}
-          onDeleteArea={handleDeleteArea}
-          onClose={() => setAreasModalOpen(false)}
-        />
-      )}
     </div>
   );
 }
@@ -855,18 +1135,22 @@ export function EstimateGrid({
 
 interface SectionBlockProps {
   section: LocalSection;
-  areas: Area[];
   pricingConfig: PricingConfig;
   addingItemSectionId: string | null;
+  addingItemGroupName: string | null;  // lifted from EstimateGrid — single source of truth
   filteredTypicals: Typical[];
   typicalSearch: string;
   typicalMultiplier: string;
   insertTypicalSectionId: string | null;
-  onQtyChange: (liId: string, areaId: string, val: string) => void;
-  onAddLineItemClick: () => void;
+  onQtyChange: (liId: string, val: string) => void;
+  onLineItemFieldChange: (liId: string, field: string, value: string | number | null) => void;
+  onDeleteSection: () => void;
+  onAddLineItemClick: (groupName?: string | null) => void;
   onCancelAddItem: () => void;
-  onSelectItem: (item: Item) => void;
+  onSelectItem: (item: Item, groupName?: string | null) => void;
   onDeleteLineItem: (liId: string) => void;
+  onDeleteLineItems: (liIds: string[]) => void;
+  onRenameLineItems: (liIds: string[], newGroupName: string) => void;
   onInsertTypicalClick: () => void;
   onCancelInsertTypical: () => void;
   onSelectTypical: (typical: Typical) => void;
@@ -876,62 +1160,104 @@ interface SectionBlockProps {
 
 function SectionBlock({
   section,
-  areas,
   pricingConfig,
   addingItemSectionId,
+  addingItemGroupName,
   filteredTypicals,
   typicalSearch,
   typicalMultiplier,
   insertTypicalSectionId,
   onQtyChange,
+  onLineItemFieldChange,
+  onDeleteSection,
   onAddLineItemClick,
   onCancelAddItem,
   onSelectItem,
   onDeleteLineItem,
+  onDeleteLineItems,
+  onRenameLineItems,
   onInsertTypicalClick,
   onCancelInsertTypical,
   onSelectTypical,
   onTypicalSearchChange,
   onTypicalMultiplierChange,
 }: SectionBlockProps) {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
+  const isLighting = section.name === "Lighting";
   const isAddingItems = addingItemSectionId === section.id;
   const isInsertingTypical = insertTypicalSectionId === section.id;
 
-  // Section totals
-  const secMat = section.line_items.reduce((s, li) => s + li.total_material, 0);
-  const secHrs = section.line_items.reduce((s, li) => s + li.total_mhrs, 0);
-  const secInstalled = section.line_items.reduce(
-    (s, li) => s + li.total_installed,
-    0
-  );
+  // Subsection/group state
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
+  const [confirmDeleteGroupIdx, setConfirmDeleteGroupIdx] = useState<number | null>(null);
+  const [editingGroupIdx, setEditingGroupIdx] = useState<number | null>(null);
+  const [editGroupName, setEditGroupName] = useState("");
+  // NOTE: activeGroupName is NOT local state — it lives in EstimateGrid as addingItemGroupName
+  const [addingSubsection, setAddingSubsection] = useState(false);
+  const [newSubsectionName, setNewSubsectionName] = useState("");
 
-  // Number of fixed + computed columns (before area columns)
-  const fixedColCount = 4; // Description, UOM, Unit Matl, Unit M/Hrs
-  const computedColCount = 4; // Total Qty, Total Material, Total Hrs, Total Installed
-  const actionColCount = 1; // delete
+  function toggleGroup(idx: number) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
+  }
+
+  function handleCreateSubsection() {
+    const name = newSubsectionName.trim();
+    if (!name) return;
+    setAddingSubsection(false);
+    setNewSubsectionName("");
+    // Pass the group name up so EstimateGrid sets it atomically with opening the panel
+    onAddLineItemClick(name);
+  }
+
+  // Section totals
+  const secHrs = section.line_items.reduce((s, li) => s + li.total_mhrs, 0);
+  const secInstalled = section.line_items.reduce((s, li) => s + li.total_installed, 0);
+
+  // Column counts for colspan
+  const fixedColCount = isLighting ? 5 : 4; // desc + (type) + uom + unit matl + unit mhrs
+  const computedColCount = 3; // total qty + total matl + total hrs + total installed
+  const totalCols = fixedColCount + 1 + computedColCount + 1 + 1; // +qty col +installed +action
+
+  // Build groups from consecutive line items with same typical_name
+  type ItemGroup = { name: string | null; idx: number; items: typeof section.line_items };
+  const groups: ItemGroup[] = [];
+  let gIdx = 0;
+  for (const li of section.line_items) {
+    const gName = (li as any).typical_name as string | null ?? null;
+    const last = groups[groups.length - 1];
+    if (!last || last.name !== gName) {
+      groups.push({ name: gName, idx: gIdx++, items: [li] });
+    } else {
+      last.items.push(li);
+    }
+  }
 
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
+    <div className="rounded border bg-card">
       {/* Section header */}
       <div
-        className="flex items-center gap-2 px-3 py-2 bg-muted/40 border-b cursor-pointer select-none hover:bg-muted/60 transition-colors"
+        className="group/hdr flex items-center gap-2 px-3 py-1.5 bg-muted/40 border-b cursor-pointer select-none hover:bg-muted/60 transition-colors"
         onClick={() => setIsOpen((v) => !v)}
       >
-        {isOpen ? (
-          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        )}
+        {isOpen
+          ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
         <span className="text-xs font-semibold flex-1">{section.name}</span>
         {secInstalled > 0 && (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {fmt$(secInstalled)}
-          </span>
+          <span className="text-xs text-muted-foreground tabular-nums">{fmt$(secInstalled)}</span>
         )}
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {fmtHrs(secHrs)} hrs
-        </span>
+        <span className="text-xs text-muted-foreground tabular-nums">{fmtHrs(secHrs)} hrs</span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDeleteSection(); }}
+          className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-0.5 rounded ml-1"
+          title="Remove section"
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
       </div>
 
       {isOpen && (
@@ -941,52 +1267,19 @@ function SectionBlock({
             <table className="w-full text-xs border-collapse">
               <thead>
                 <tr className="bg-muted/30 border-b">
-                  {/* Fixed columns */}
-                  <th className="sticky left-0 z-10 bg-muted/30 text-left px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r min-w-[200px]">
+                  <th className="sticky left-0 z-20 bg-muted text-left px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r min-w-[200px]">
                     Description
                   </th>
-                  <th className="text-left px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-12">
-                    UOM
-                  </th>
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20">
-                    Unit Matl
-                  </th>
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20">
-                    Unit M/Hrs
-                  </th>
-
-                  {/* Area columns */}
-                  {areas.map((area) => (
-                    <th
-                      key={area.id}
-                      className="text-center px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20 bg-blue-50/30 dark:bg-blue-950/20"
-                    >
-                      {area.name}
-                    </th>
-                  ))}
-
-                  {/* No areas yet placeholder */}
-                  {areas.length === 0 && (
-                    <th className="text-center px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-28 bg-blue-50/30 dark:bg-blue-950/20 italic">
-                      (no areas)
-                    </th>
+                  {isLighting && (
+                    <th className="text-left px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-14">Type</th>
                   )}
-
-                  {/* Computed columns */}
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-16 bg-muted/50">
-                    Total Qty
-                  </th>
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-24 bg-muted/50">
-                    Total Matl
-                  </th>
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20 bg-muted/50">
-                    Total Hrs
-                  </th>
-                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-28 bg-muted/50">
-                    Total Installed
-                  </th>
-
-                  {/* Action */}
+                  <th className="text-left px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-12">UOM</th>
+                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20">Unit Matl</th>
+                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20">Unit Hrs</th>
+                  <th className="text-center px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-24 bg-blue-50/30 dark:bg-blue-950/20">QTY</th>
+                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-24 bg-muted/50">Total Matl</th>
+                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-20 bg-muted/50">Total Hrs</th>
+                  <th className="text-right px-2 py-1.5 font-medium text-muted-foreground whitespace-nowrap border-r w-28 bg-muted/50">Installed</th>
                   <th className="w-8" />
                 </tr>
               </thead>
@@ -994,113 +1287,164 @@ function SectionBlock({
               <tbody className="divide-y">
                 {section.line_items.length === 0 && !isAddingItems && (
                   <tr>
-                    <td
-                      colSpan={
-                        fixedColCount +
-                        Math.max(areas.length, 1) +
-                        computedColCount +
-                        actionColCount
-                      }
-                      className="px-3 py-4 text-center text-xs text-muted-foreground italic"
-                    >
-                      No line items — click &ldquo;Add Line Item&rdquo; to add from
-                      the database
+                    <td colSpan={totalCols} className="px-3 py-4 text-center text-xs text-muted-foreground italic">
+                      No line items — click "Add Line Item" or "Insert Typical" below
                     </td>
                   </tr>
                 )}
 
-                {(() => {
-                  // Group consecutive typical items under their typical_name header
-                  const rows: React.ReactNode[] = [];
-                  let lastTypical: string | null = null;
-                  let typicalRowIdx = 0;
-                  section.line_items.forEach((li, rowIdx) => {
-                    const tName = (li as any).typical_name as string | null;
-                    if (tName && tName !== lastTypical) {
-                      lastTypical = tName;
-                      typicalRowIdx = 0;
-                      const colSpan = fixedColCount + Math.max(areas.length, 1) + computedColCount + actionColCount;
-                      rows.push(
-                        <tr key={`typ-hdr-${tName}-${rowIdx}`} className="bg-amber-50/60 border-t border-amber-200">
-                          <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-amber-800 tracking-wide">
-                            ▸ {tName}
-                          </td>
-                        </tr>
-                      );
-                    } else if (!tName) {
-                      lastTypical = null;
-                    }
-                    rows.push(
-                      <LineItemRow
-                        key={li.id}
-                        li={li}
-                        areas={areas}
-                        rowIdx={rowIdx}
-                        onQtyChange={(areaId, val) => onQtyChange(li.id, areaId, val)}
-                        onDelete={() => onDeleteLineItem(li.id)}
-                        isTypicalChild={!!tName}
-                      />
-                    );
-                    if (tName) typicalRowIdx++;
-                  });
-                  return rows;
-                })()}
-              </tbody>
+                {groups.map((group) => {
+                  const isCollapsed = collapsedGroups.has(group.idx);
+                  const gMat = group.items.reduce((s, li) => s + li.total_material, 0);
+                  const gHrs = group.items.reduce((s, li) => s + li.total_mhrs, 0);
+                  const gInstalled = group.items.reduce((s, li) => s + li.total_installed, 0);
 
-              {/* Section subtotal */}
-              {section.line_items.length > 0 && (
-                <tfoot>
-                  <tr className="border-t-2 bg-muted/20 font-semibold">
-                    <td
-                      colSpan={
-                        fixedColCount + Math.max(areas.length, 1)
-                      }
-                      className="sticky left-0 bg-muted/20 px-2 py-1.5 text-right text-xs text-muted-foreground"
-                    >
-                      Section Total
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-xs" />
-                    <td className="px-2 py-1.5 text-right tabular-nums text-xs">
-                      {fmt$(secMat)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-xs">
-                      {fmtHrs(secHrs)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-xs text-primary">
-                      {fmt$(secInstalled)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              )}
+                  return (
+                    <React.Fragment key={`grp-${group.idx}`}>
+                      {/* Group header row — only for named groups */}
+                      {group.name && (
+                        confirmDeleteGroupIdx === group.idx ? (
+                          <tr className="bg-destructive/10 border-t border-destructive/20">
+                            <td colSpan={totalCols} className="px-3 py-1.5">
+                              <div className="flex items-center gap-3">
+                                <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />
+                                <span className="text-xs flex-1">
+                                  <span className="font-semibold text-destructive">Remove "{group.name}"?</span>
+                                  <span className="text-muted-foreground ml-2">All {group.items.length} line items will be deleted.</span>
+                                </span>
+                                <Button size="xs" variant="destructive" onClick={() => { onDeleteLineItems(group.items.map((li) => li.id)); setConfirmDeleteGroupIdx(null); }}>Delete</Button>
+                                <Button size="xs" variant="ghost" onClick={() => setConfirmDeleteGroupIdx(null)}>Cancel</Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : editingGroupIdx === group.idx ? (
+                          <tr className="bg-amber-50/70 border-t border-amber-200">
+                            <td colSpan={totalCols} className="px-3 py-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <Input
+                                  autoFocus
+                                  value={editGroupName}
+                                  onChange={(e) => setEditGroupName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && editGroupName.trim()) {
+                                      onRenameLineItems(group.items.map((li) => li.id), editGroupName.trim());
+                                      setEditingGroupIdx(null);
+                                    }
+                                    if (e.key === "Escape") setEditingGroupIdx(null);
+                                  }}
+                                  className="h-6 text-xs w-52 px-2 font-semibold"
+                                />
+                                <Button size="icon-xs" onClick={() => { if (editGroupName.trim()) { onRenameLineItems(group.items.map((li) => li.id), editGroupName.trim()); setEditingGroupIdx(null); } }}>
+                                  <Check className="w-3 h-3" />
+                                </Button>
+                                <Button size="icon-xs" variant="ghost" onClick={() => setEditingGroupIdx(null)}>
+                                  <X className="w-3 h-3" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (
+                          <tr
+                            className="group/grphdr bg-amber-50/70 border-t border-amber-200 cursor-pointer hover:bg-amber-100/70 select-none"
+                            onClick={() => toggleGroup(group.idx)}
+                          >
+                            <td colSpan={fixedColCount + 1} className="px-3 py-1.5">
+                              <div className="flex items-center gap-1.5">
+                                {isCollapsed
+                                  ? <ChevronRight className="w-3 h-3 text-amber-700 shrink-0" />
+                                  : <ChevronDown className="w-3 h-3 text-amber-700 shrink-0" />}
+                                <span className="text-xs font-semibold text-amber-900">{group.name}</span>
+                                <span className="text-[10px] text-amber-600 ml-1">({group.items.length} items)</span>
+                                <div className="flex items-center gap-0.5 ml-1 opacity-0 group-hover/grphdr:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); onAddLineItemClick(group.name); }}
+                                    className="text-amber-500 hover:text-amber-800 p-0.5 rounded"
+                                    title="Add line item to this group"
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setEditingGroupIdx(group.idx); setEditGroupName(group.name ?? ""); }}
+                                    className="text-amber-500 hover:text-amber-800 p-0.5 rounded"
+                                    title="Rename group"
+                                  >
+                                    <Pencil className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setConfirmDeleteGroupIdx(group.idx); }}
+                                    className="text-amber-500 hover:text-destructive p-0.5 rounded"
+                                    title="Remove group and all its items"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-xs text-amber-700 tabular-nums font-medium">{gMat > 0 ? fmt$(gMat) : ""}</td>
+                            <td className="px-2 py-1.5 text-right text-xs text-amber-700 tabular-nums">{gHrs > 0 ? fmtHrs(gHrs) : ""}</td>
+                            <td className="px-2 py-1.5 text-right text-xs font-semibold text-amber-900 tabular-nums">{gInstalled > 0 ? fmt$(gInstalled) : ""}</td>
+                            <td />
+                          </tr>
+                        )
+                      )}
+
+                      {/* Line item rows */}
+                      {!isCollapsed && group.items.map((li, rowIdx) => (
+                        <LineItemRow
+                          key={li.id}
+                          li={li}
+                          rowIdx={rowIdx}
+                          isLighting={isLighting}
+                          isTypicalChild={!!group.name}
+                          onQtyChange={(val) => onQtyChange(li.id, val)}
+                          onFieldChange={(field, val) => onLineItemFieldChange(li.id, field, val)}
+                          onDelete={() => onDeleteLineItem(li.id)}
+                        />
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
             </table>
           </div>
 
-          {/* Add line item / Insert typical area */}
+          {/* Footer actions */}
           <div className="border-t px-3 py-2">
-            {!isAddingItems && !isInsertingTypical ? (
+            {addingSubsection ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground shrink-0">Subsection name:</span>
+                <Input
+                  autoFocus
+                  value={newSubsectionName}
+                  onChange={(e) => setNewSubsectionName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateSubsection();
+                    if (e.key === "Escape") { setAddingSubsection(false); setNewSubsectionName(""); }
+                  }}
+                  placeholder='e.g. Duct Bank (12) 4"'
+                  className="h-6 text-xs w-48 px-2"
+                />
+                <Button size="icon-xs" onClick={handleCreateSubsection}><Check className="w-3 h-3" /></Button>
+                <Button size="icon-xs" variant="ghost" onClick={() => { setAddingSubsection(false); setNewSubsectionName(""); }}><X className="w-3 h-3" /></Button>
+              </div>
+            ) : !isAddingItems && !isInsertingTypical ? (
               <div className="flex items-center gap-2">
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={onAddLineItemClick}
-                >
-                  <Plus className="w-3 h-3 mr-1" />
-                  Add Line Item
+                <Button size="xs" variant="ghost" onClick={() => onAddLineItemClick(null)}>
+                  <Plus className="w-3 h-3 mr-1" /> Add Line Item
                 </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={onInsertTypicalClick}
-                >
-                  <Layers className="w-3 h-3 mr-1" />
-                  Insert Typical
+                <Button size="xs" variant="ghost" onClick={onInsertTypicalClick}>
+                  <Layers className="w-3 h-3 mr-1" /> Insert Typical
+                </Button>
+                <Button size="xs" variant="ghost" onClick={() => setAddingSubsection(true)}>
+                  <Plus className="w-3 h-3 mr-1" /> Add Subsection
                 </Button>
               </div>
             ) : isAddingItems ? (
               <ItemSearchPanel
-                onSelect={onSelectItem}
+                onSelect={(item) => onSelectItem(item, addingItemGroupName)}
                 onCancel={onCancelAddItem}
+                keepOpenAfterSelect
+                groupLabel={addingItemGroupName ?? undefined}
               />
             ) : (
               <TypicalSearchPanel
@@ -1126,83 +1470,101 @@ function SectionBlock({
 
 interface LineItemRowProps {
   li: LocalLineItem;
-  areas: Area[];
   rowIdx: number;
-  onQtyChange: (areaId: string, val: string) => void;
+  onQtyChange: (val: string) => void;
+  onFieldChange: (field: string, value: string | number | null) => void;
   onDelete: () => void;
   isTypicalChild?: boolean;
+  isLighting?: boolean;
 }
 
-function LineItemRow({ li, areas, rowIdx, onQtyChange, onDelete, isTypicalChild }: LineItemRowProps) {
-  const isEven = rowIdx % 2 === 0;
+const cellInput = "w-full h-6 text-xs bg-transparent border border-transparent rounded px-1 hover:border-input focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring/50 transition-colors";
 
-  function getQty(areaId: string): number {
-    return li.quantities.find((q) => q.area_id === areaId)?.quantity ?? 0;
-  }
+function LineItemRow({ li, rowIdx, onQtyChange, onFieldChange, onDelete, isTypicalChild, isLighting }: LineItemRowProps) {
+  const isEven = rowIdx % 2 === 0;
 
   return (
     <tr
       className={cn(
-        "group hover:bg-primary/5 transition-colors",
-        isEven ? "bg-background" : "bg-muted/10"
+        "group hover:bg-primary/10 transition-colors",
+        isEven ? "bg-white dark:bg-background" : "bg-muted/40"
       )}
     >
       {/* Description — sticky */}
       <td className={cn(
-        "sticky left-0 z-10 px-2 py-1 border-r",
-        isEven ? "bg-background" : "bg-muted/10",
-        "group-hover:bg-primary/5"
+        "sticky left-0 z-20 px-2 py-1 border-r",
+        isEven ? "bg-white dark:bg-background" : "bg-muted",
+        "group-hover:bg-primary/10"
       )}>
         <div className={cn("flex items-center gap-1.5 min-w-0", isTypicalChild && "pl-3")}>
           {li.code && (
-            <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+            <span className="text-[10px] font-mono text-muted-foreground shrink-0 select-none">
               {li.code}
             </span>
           )}
-          <span className="truncate" title={li.description ?? ""}>
-            {li.description ?? "—"}
-          </span>
+          <input
+            className={cn(cellInput, "min-w-0 flex-1")}
+            defaultValue={li.description ?? ""}
+            placeholder="Description"
+            onBlur={(e) => onFieldChange("description", e.target.value || null)}
+          />
         </div>
       </td>
 
-      {/* UOM */}
-      <td className="px-2 py-1 border-r text-muted-foreground whitespace-nowrap">
-        {li.unit_of_measure ?? ""}
-      </td>
-
-      {/* Unit material */}
-      <td className="px-2 py-1 border-r text-right tabular-nums whitespace-nowrap">
-        {li.unit_material > 0 ? fmt$(li.unit_material) : "—"}
-      </td>
-
-      {/* Unit M/Hrs */}
-      <td className="px-2 py-1 border-r text-right tabular-nums whitespace-nowrap">
-        {li.unit_mhrs > 0 ? li.unit_mhrs.toFixed(4) : "—"}
-      </td>
-
-      {/* Area qty inputs */}
-      {areas.map((area) => (
-        <td
-          key={area.id}
-          className="px-1 py-0.5 border-r bg-blue-50/20 dark:bg-blue-950/10 text-center"
-        >
-          <QtyInput
-            value={getQty(area.id)}
-            onChange={(val) => onQtyChange(area.id, val)}
+      {/* Type (Lighting only) */}
+      {isLighting && (
+        <td className="px-2 py-1 border-r whitespace-nowrap">
+          <input
+            className={cn(cellInput, "w-12 font-mono text-center")}
+            defaultValue={li.fixture_type ?? ""}
+            placeholder="A"
+            onBlur={(e) => onFieldChange("fixture_type", e.target.value || null)}
           />
-        </td>
-      ))}
-
-      {/* No areas placeholder */}
-      {areas.length === 0 && (
-        <td className="px-2 py-1 border-r text-center text-muted-foreground italic text-[10px]">
-          add areas
         </td>
       )}
 
-      {/* Total qty */}
-      <td className="px-2 py-1 border-r text-right tabular-nums bg-muted/10 whitespace-nowrap">
-        {fmtQty(li.total_qty)}
+      {/* UOM */}
+      <td className="px-2 py-1 border-r whitespace-nowrap">
+        <input
+          className={cn(cellInput, "w-14")}
+          defaultValue={li.unit_of_measure ?? ""}
+          placeholder="UOM"
+          onBlur={(e) => onFieldChange("unit_of_measure", e.target.value || null)}
+        />
+      </td>
+
+      {/* Unit material */}
+      <td className="px-2 py-1 border-r whitespace-nowrap">
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          className={cn(cellInput, "w-20 text-right tabular-nums")}
+          defaultValue={li.unit_material > 0 ? li.unit_material : ""}
+          placeholder="0.00"
+          onBlur={(e) => onFieldChange("unit_material", e.target.value ? Number(e.target.value) : 0)}
+        />
+      </td>
+
+      {/* Unit M/Hrs */}
+      <td className="px-2 py-1 border-r whitespace-nowrap">
+        <input
+          type="number"
+          min={0}
+          step={0.0001}
+          className={cn(cellInput, "w-20 text-right tabular-nums")}
+          defaultValue={li.unit_mhrs > 0 ? li.unit_mhrs : ""}
+          placeholder="0.0000"
+          onBlur={(e) => onFieldChange("unit_mhrs", e.target.value ? Number(e.target.value) : 0)}
+        />
+      </td>
+
+      {/* QTY */}
+      <td className="px-1 py-0.5 border-r bg-blue-50/20 dark:bg-blue-950/10 text-center">
+        <QtyInput
+          value={li.total_qty}
+          onChange={onQtyChange}
+        />
       </td>
 
       {/* Total material */}
@@ -1235,7 +1597,7 @@ function LineItemRow({ li, areas, rowIdx, onQtyChange, onDelete, isTypicalChild 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QtyInput — memoized, small number input cell
+// QtyInput
 // ─────────────────────────────────────────────────────────────────────────────
 
 const QtyInput = React.memo(function QtyInput({
@@ -1248,7 +1610,6 @@ const QtyInput = React.memo(function QtyInput({
   const [localVal, setLocalVal] = useState(value === 0 ? "" : String(value));
   const isDirty = useRef(false);
 
-  // Sync from parent only if user isn't actively editing
   React.useEffect(() => {
     if (!isDirty.current) {
       setLocalVal(value === 0 ? "" : String(value));
@@ -1266,11 +1627,9 @@ const QtyInput = React.memo(function QtyInput({
         setLocalVal(e.target.value);
         onChange(e.target.value);
       }}
-      onBlur={() => {
-        isDirty.current = false;
-      }}
+      onBlur={() => { isDirty.current = false; }}
       className={cn(
-        "w-16 h-6 text-xs text-center tabular-nums rounded border border-transparent",
+        "w-20 h-6 text-xs text-center tabular-nums rounded border border-transparent",
         "bg-transparent hover:border-input focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring/50",
         "transition-colors px-1",
         localVal && Number(localVal) > 0
@@ -1289,13 +1648,17 @@ const QtyInput = React.memo(function QtyInput({
 interface ItemSearchPanelProps {
   onSelect: (item: Item) => void;
   onCancel: () => void;
+  keepOpenAfterSelect?: boolean;
+  groupLabel?: string;
 }
 
-function ItemSearchPanel({ onSelect, onCancel }: ItemSearchPanelProps) {
+function ItemSearchPanel({ onSelect, onCancel, keepOpenAfterSelect, groupLabel }: ItemSearchPanelProps) {
   const supabase = createClient();
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<Item[]>([]);
   const [loading, setLoading] = useState(false);
+  const [addedCodes, setAddedCodes] = useState<Set<string>>(new Set());
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const q = search.trim();
@@ -1315,12 +1678,21 @@ function ItemSearchPanel({ onSelect, onCancel }: ItemSearchPanelProps) {
     return () => clearTimeout(timer);
   }, [search]);
 
+  function handleSelect(item: Item) {
+    onSelect(item);
+    if (keepOpenAfterSelect) {
+      setAddedCodes((prev) => new Set([...prev, item.code]));
+      inputRef.current?.focus();
+    }
+  }
+
   return (
     <div className="rounded-lg border bg-card shadow-md p-3 space-y-2 max-w-xl">
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
+            ref={inputRef}
             autoFocus
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1328,9 +1700,18 @@ function ItemSearchPanel({ onSelect, onCancel }: ItemSearchPanelProps) {
             className="h-7 text-xs pl-7 pr-2"
           />
         </div>
-        <Button size="icon-xs" variant="ghost" onClick={onCancel}>
-          <X className="w-3.5 h-3.5" />
-        </Button>
+        {groupLabel && (
+          <span className="text-[10px] bg-amber-100 border border-amber-200 text-amber-800 rounded px-1.5 py-0.5 shrink-0 font-medium truncate max-w-[140px]">
+            → {groupLabel}
+          </span>
+        )}
+        {keepOpenAfterSelect ? (
+          <Button size="xs" variant="outline" onClick={onCancel}>Done</Button>
+        ) : (
+          <Button size="icon-xs" variant="ghost" onClick={onCancel}>
+            <X className="w-3.5 h-3.5" />
+          </Button>
+        )}
       </div>
 
       <div className="max-h-48 overflow-y-auto rounded border divide-y">
@@ -1344,19 +1725,19 @@ function ItemSearchPanel({ onSelect, onCancel }: ItemSearchPanelProps) {
           results.map((item) => (
             <button
               key={item.id}
-              onClick={() => onSelect(item)}
-              className="w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors"
+              onClick={() => handleSelect(item)}
+              className={cn(
+                "w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors",
+                addedCodes.has(item.code) && "bg-emerald-50/60"
+              )}
             >
-              <span className="font-mono text-[10px] text-muted-foreground w-20 shrink-0 truncate">
-                {item.code}
-              </span>
+              <span className="font-mono text-[10px] text-muted-foreground w-20 shrink-0 truncate">{item.code}</span>
               <span className="text-xs flex-1 truncate">{item.description}</span>
-              <span className="text-[10px] text-muted-foreground shrink-0">
-                {item.unit_of_measure}
-              </span>
+              <span className="text-[10px] text-muted-foreground shrink-0">{item.unit_of_measure}</span>
               <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
                 {item.material_cost > 0 ? fmt$(item.material_cost) : ""}
               </span>
+              {addedCodes.has(item.code) && <Check className="w-3 h-3 text-emerald-600 shrink-0" />}
             </button>
           ))
         )}
@@ -1395,11 +1776,8 @@ function TypicalSearchPanel({
   return (
     <div className="rounded-lg border bg-card shadow-md p-3 space-y-2 max-w-2xl">
       <div className="flex items-center gap-2">
-        {/* Multiplier input */}
         <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            Qty multiplier:
-          </span>
+          <span className="text-xs text-muted-foreground whitespace-nowrap">Qty multiplier:</span>
           <Input
             type="number"
             min="0"
@@ -1409,8 +1787,6 @@ function TypicalSearchPanel({
             className="h-7 text-xs w-20 text-right"
           />
         </div>
-
-        {/* Search input */}
         <div className="relative flex-1">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
@@ -1421,7 +1797,6 @@ function TypicalSearchPanel({
             className="h-7 text-xs pl-7 pr-2"
           />
         </div>
-
         <Button size="icon-xs" variant="ghost" onClick={onCancel}>
           <X className="w-3.5 h-3.5" />
         </Button>
@@ -1440,128 +1815,21 @@ function TypicalSearchPanel({
               className="w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors"
             >
               {typical.code && (
-                <span className="font-mono text-[10px] text-muted-foreground w-16 shrink-0 truncate">
-                  {typical.code}
-                </span>
+                <span className="font-mono text-[10px] text-muted-foreground w-16 shrink-0 truncate">{typical.code}</span>
               )}
-              <span className="text-xs flex-1 truncate font-medium">
-                {typical.name}
-              </span>
+              <span className="text-xs flex-1 truncate font-medium">{typical.name}</span>
               {typical.description && (
-                <span className="text-[10px] text-muted-foreground shrink-0 truncate max-w-[180px]">
-                  {typical.description}
-                </span>
+                <span className="text-[10px] text-muted-foreground shrink-0 truncate max-w-[180px]">{typical.description}</span>
               )}
-              <span className="text-[10px] text-muted-foreground shrink-0">
-                {typical.unit_of_measure}
-              </span>
+              <span className="text-[10px] text-muted-foreground shrink-0">{typical.unit_of_measure}</span>
             </button>
           ))
         )}
       </div>
 
       {typicals.length === 50 && (
-        <p className="text-[10px] text-muted-foreground">
-          Showing first 50 results. Refine your search.
-        </p>
+        <p className="text-[10px] text-muted-foreground">Showing first 50 results. Refine your search.</p>
       )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AreasModal
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface AreasModalProps {
-  areas: Area[];
-  newAreaName: string;
-  onNewAreaNameChange: (v: string) => void;
-  onAddArea: () => void;
-  onDeleteArea: (id: string) => void;
-  onClose: () => void;
-}
-
-function AreasModal({
-  areas,
-  newAreaName,
-  onNewAreaNameChange,
-  onAddArea,
-  onDeleteArea,
-  onClose,
-}: AreasModalProps) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Panel */}
-      <div className="relative z-10 w-full max-w-sm rounded-xl bg-card border shadow-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-sm">Manage Areas</h2>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <p className="text-xs text-muted-foreground">
-          Areas are the quantity columns in your takeoff (e.g., &ldquo;Building A&rdquo;,
-          &ldquo;Floor 1&rdquo;, &ldquo;Zone 1&rdquo;).
-        </p>
-
-        {/* Existing areas */}
-        <div className="space-y-1.5 max-h-56 overflow-y-auto">
-          {areas.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic text-center py-3">
-              No areas yet
-            </p>
-          ) : (
-            areas.map((area) => (
-              <div
-                key={area.id}
-                className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted/40 group"
-              >
-                <span className="text-sm">{area.name}</span>
-                <button
-                  onClick={() => onDeleteArea(area.id)}
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 rounded"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Add new area */}
-        <div className="flex items-center gap-2 border-t pt-3">
-          <Input
-            value={newAreaName}
-            onChange={(e) => onNewAreaNameChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onAddArea();
-            }}
-            placeholder="New area name…"
-            className="h-8 text-sm flex-1"
-          />
-          <Button size="sm" onClick={onAddArea} disabled={!newAreaName.trim()}>
-            <Plus className="w-3.5 h-3.5 mr-1" />
-            Add
-          </Button>
-        </div>
-
-        <div className="flex justify-end pt-1">
-          <Button variant="outline" size="sm" onClick={onClose}>
-            Done
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }
