@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Plus, Trash2, Zap } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Plus, Trash2, Zap, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -38,10 +39,26 @@ function DescriptionSearchCell({
   const [results, setResults] = useState<Partial<Item>[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
 
   // Sync when parent pushes a new value (e.g. after auto-fill)
   useEffect(() => { setLocalVal(value); }, [value]);
+
+  // Recalculate dropdown position whenever it opens
+  useEffect(() => {
+    if (open && inputRef.current) {
+      const rect = inputRef.current.getBoundingClientRect();
+      setDropdownStyle({
+        position: "fixed",
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: Math.max(rect.width, 560),
+        zIndex: 9999,
+      });
+    }
+  }, [open]);
 
   // Live search — debounced 200 ms
   useEffect(() => {
@@ -62,20 +79,68 @@ function DescriptionSearchCell({
     return () => clearTimeout(timer);
   }, [localVal]); // eslint-disable-line
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click (handles both input and portal dropdown)
   useEffect(() => {
     function handle(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      const inInput = inputRef.current?.contains(target);
+      const inDropdown = dropdownRef.current?.contains(target);
+      if (!inInput && !inDropdown) setOpen(false);
     }
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, []);
 
+  const dropdown = open && (loading || results.length > 0) ? (
+    <div ref={dropdownRef} style={dropdownStyle} className="bg-card border rounded-lg shadow-xl overflow-hidden">
+      {loading ? (
+        <div className="px-3 py-3 text-xs text-muted-foreground">Searching…</div>
+      ) : (
+        <>
+          <div className="px-3 py-1.5 border-b bg-muted/40 flex items-center gap-1.5">
+            <Zap className="w-3 h-3 text-amber-500" />
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+              Select to auto-fill Watts · Avg Run · Equip Cost
+            </span>
+          </div>
+          <div className="max-h-64 overflow-y-auto divide-y">
+            {results.map((item) => (
+              <button
+                key={item.id}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-muted/50 text-left"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setLocalVal(item.description ?? "");
+                  onChange(item.description ?? "");
+                  setOpen(false);
+                  onSelectItem(item);
+                }}
+              >
+                <span className="font-mono text-[10px] text-muted-foreground w-20 shrink-0">{item.code}</span>
+                <span className="text-xs flex-1">{item.description}</span>
+                <div className="flex items-center gap-3 shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                  {item.watts != null && item.watts > 0 && (
+                    <span className="text-amber-600 font-medium">{item.watts}W</span>
+                  )}
+                  {item.avg_length != null && item.avg_length > 0 && (
+                    <span>{item.avg_length} ft</span>
+                  )}
+                  {item.equipment_cost != null && item.equipment_cost > 0 && (
+                    <span>{fmtCost(item.equipment_cost)}</span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  ) : null;
+
   return (
-    <div ref={containerRef} className="relative">
+    <div className="relative">
       <Input
+        ref={inputRef}
         className="h-8 text-sm border-transparent hover:border-border focus:border-border"
         value={localVal}
         placeholder="Type to search DB or enter manually…"
@@ -86,57 +151,12 @@ function DescriptionSearchCell({
         }}
         onFocus={() => { if (localVal.length >= 2 && results.length > 0) setOpen(true); }}
         onBlur={() => {
-          // Small delay so mousedown on dropdown fires first
           setTimeout(() => { setOpen(false); onBlurSave(localVal); }, 150);
         }}
       />
-
-      {/* Dropdown */}
-      {open && (loading || results.length > 0) && (
-        <div className="absolute left-0 top-full mt-1 z-50 w-[480px] bg-card border rounded-lg shadow-xl overflow-hidden">
-          {loading ? (
-            <div className="px-3 py-3 text-xs text-muted-foreground">Searching…</div>
-          ) : (
-            <>
-              <div className="px-3 py-1.5 border-b bg-muted/40 flex items-center gap-1.5">
-                <Zap className="w-3 h-3 text-amber-500" />
-                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                  Select to auto-fill Watts · Avg Run · Equip Cost
-                </span>
-              </div>
-              <div className="max-h-56 overflow-y-auto divide-y">
-                {results.map((item) => (
-                  <button
-                    key={item.id}
-                    className="w-full flex items-center gap-3 px-3 py-2 hover:bg-muted/50 text-left"
-                    onMouseDown={(e) => {
-                      e.preventDefault(); // keep input focused, prevent blur handler
-                      setLocalVal(item.description ?? "");
-                      onChange(item.description ?? "");
-                      setOpen(false);
-                      onSelectItem(item);
-                    }}
-                  >
-                    <span className="font-mono text-[10px] text-muted-foreground w-20 shrink-0">{item.code}</span>
-                    <span className="text-xs flex-1 truncate">{item.description}</span>
-                    <div className="flex items-center gap-3 shrink-0 text-[10px] text-muted-foreground tabular-nums">
-                      {item.watts != null && item.watts > 0 && (
-                        <span className="text-amber-600 font-medium">{item.watts}W</span>
-                      )}
-                      {item.avg_length != null && item.avg_length > 0 && (
-                        <span>{item.avg_length} ft</span>
-                      )}
-                      {item.equipment_cost != null && item.equipment_cost > 0 && (
-                        <span>{fmtCost(item.equipment_cost)}</span>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {typeof window !== "undefined" && dropdown
+        ? createPortal(dropdown, document.body)
+        : null}
     </div>
   );
 }
@@ -153,6 +173,7 @@ export function FixtureScheduleTable({
   const supabase = createClient();
   const [fixtures, setFixtures] = useState<FixtureScheduleEntry[]>(initialFixtures);
   const [saving, setSaving] = useState<Set<string>>(new Set());
+  const [typeErrors, setTypeErrors] = useState<Record<string, string>>({});
 
   const markSaving = (id: string, on: boolean) =>
     setSaving((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
@@ -165,11 +186,32 @@ export function FixtureScheduleTable({
   // Save a single field on blur
   const saveField = useCallback(
     async (id: string, field: string, value: string | number | null) => {
+      // Enforce unique type_code per project
+      if (field === "type_code" && value) {
+        const val = String(value).trim().toUpperCase();
+        const duplicate = fixtures.find(
+          (f) => f.id !== id && f.type_code.trim().toUpperCase() === val
+        );
+        if (duplicate) {
+          setTypeErrors((prev) => ({
+            ...prev,
+            [id]: `Type "${value}" is already used — each type must be unique`,
+          }));
+          // Revert local state to the previous saved value
+          const original = initialFixtures.find((f) => f.id === id)?.type_code ?? "";
+          updateLocal(id, { type_code: original });
+          return;
+        }
+      }
+      // Clear any previous type error
+      if (field === "type_code") {
+        setTypeErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      }
       markSaving(id, true);
       await supabase.from("fixture_schedules").update({ [field]: value }).eq("id", id);
       markSaving(id, false);
     },
-    [supabase]
+    [supabase, fixtures, initialFixtures]
   );
 
   // Auto-fill from DB item selection (saves all fields at once)
@@ -258,15 +300,26 @@ export function FixtureScheduleTable({
               >
                 {/* Type code */}
                 <td className="px-2 py-1.5">
-                  <Input
-                    className={cellCls + " font-mono w-16"}
-                    defaultValue={fixture.type_code}
-                    placeholder="A"
-                    onBlur={(e) => {
-                      updateLocal(fixture.id, { type_code: e.target.value });
-                      saveField(fixture.id, "type_code", e.target.value);
-                    }}
-                  />
+                  <div className="relative">
+                    <Input
+                      className={cn(
+                        cellCls + " font-mono w-16",
+                        typeErrors[fixture.id] && "border-destructive focus:border-destructive"
+                      )}
+                      defaultValue={fixture.type_code}
+                      placeholder="A"
+                      onBlur={(e) => {
+                        updateLocal(fixture.id, { type_code: e.target.value });
+                        saveField(fixture.id, "type_code", e.target.value);
+                      }}
+                    />
+                    {typeErrors[fixture.id] && (
+                      <div className="absolute left-0 top-full mt-1 z-50 flex items-start gap-1 bg-destructive/10 border border-destructive/30 text-destructive rounded px-2 py-1 text-[10px] whitespace-nowrap shadow-sm">
+                        <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+                        {typeErrors[fixture.id]}
+                      </div>
+                    )}
+                  </div>
                 </td>
 
                 {/* Description — live DB search */}
