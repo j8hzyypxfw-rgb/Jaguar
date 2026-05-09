@@ -21,6 +21,7 @@ import {
   Pencil,
   AlertTriangle,
   MapPin,
+  Zap,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,7 @@ import type {
   Item,
   Typical,
   TypicalLineItem,
+  FixtureScheduleEntry,
 } from "@/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,6 +224,7 @@ export function EstimateGrid({
   const [insertTypicalSectionId, setInsertTypicalSectionId] = useState<string | null>(null);
   const [typicalSearch, setTypicalSearch] = useState("");
   const [typicalMultiplier, setTypicalMultiplier] = useState("1");
+  const [insertFixtureSectionId, setInsertFixtureSectionId] = useState<string | null>(null);
 
   // ── Debounce map ────────────────────────────────────────────────────────────
   const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -471,6 +474,47 @@ export function EstimateGrid({
       updateSection(prev, sectionId, (s) => ({
         ...s,
         line_items: [...s.line_items, newLI],
+      }))
+    );
+  }
+
+  // Add a line item sourced from the project's fixture schedule
+  async function handleAddLineItemFromFixture(sectionId: string, fixture: FixtureScheduleEntry) {
+    let sortOrder = 0;
+    for (const ph of phases) {
+      for (const area of ph.areas) {
+        const sec = area.sections.find((s) => s.id === sectionId);
+        if (sec) { sortOrder = sec.line_items.length; break; }
+      }
+    }
+    const { data, error } = await supabase
+      .from("line_items")
+      .insert({
+        section_id:      sectionId,
+        item_id:         null,
+        code:            fixture.type_code || null,
+        description:     fixture.description,
+        fixture_type:    fixture.type_code || null,
+        unit_of_measure: "EA",
+        unit_equipment:  fixture.equipment_cost ?? 0,
+        unit_excavation: 0,
+        unit_sub:        0,
+        unit_material:   0,
+        unit_mhrs:       0,
+        unit_ot_hrs:     0,
+        unit_watts:      fixture.watts ?? null,
+        unit_avg_length: fixture.avg_length ?? null,
+        total_qty:       0,
+        sort_order:      sortOrder,
+        price_source:    "manual",
+      })
+      .select()
+      .single();
+    if (error) { console.error(error); return; }
+    setPhases((prev) =>
+      updateSection(prev, sectionId, (s) => ({
+        ...s,
+        line_items: [...s.line_items, data as LocalLineItem],
       }))
     );
   }
@@ -1056,12 +1100,14 @@ export function EstimateGrid({
                                         key={section.id}
                                         section={section}
                                         pricingConfig={pricingConfig}
+                                        projectId={project.id}
                                         addingItemSectionId={addingItemSectionId}
                                         addingItemGroupName={addingItemGroupName}
                                         filteredTypicals={filteredTypicals}
                                         typicalSearch={typicalSearch}
                                         typicalMultiplier={typicalMultiplier}
                                         insertTypicalSectionId={insertTypicalSectionId}
+                                        insertFixtureSectionId={insertFixtureSectionId}
                                         onQtyChange={(liId, val) =>
                                           handleQtyChange(section.id, liId, val)
                                         }
@@ -1075,6 +1121,7 @@ export function EstimateGrid({
                                           setAddingItemSectionId(section.id);
                                           setAddingItemGroupName(groupName ?? null);
                                           setInsertTypicalSectionId(null);
+                                          setInsertFixtureSectionId(null);
                                         }}
                                         onCancelAddItem={() => {
                                           setAddingItemSectionId(null);
@@ -1095,6 +1142,7 @@ export function EstimateGrid({
                                         onInsertTypicalClick={() => {
                                           setInsertTypicalSectionId(section.id);
                                           setAddingItemSectionId(null);
+                                          setInsertFixtureSectionId(null);
                                           setTypicalSearch("");
                                           setTypicalMultiplier("1");
                                         }}
@@ -1108,6 +1156,15 @@ export function EstimateGrid({
                                         }
                                         onTypicalSearchChange={(v) => setTypicalSearch(v)}
                                         onTypicalMultiplierChange={(v) => setTypicalMultiplier(v)}
+                                        onInsertFixtureClick={() => {
+                                          setInsertFixtureSectionId(section.id);
+                                          setAddingItemSectionId(null);
+                                          setInsertTypicalSectionId(null);
+                                        }}
+                                        onCancelInsertFixture={() => setInsertFixtureSectionId(null)}
+                                        onSelectFixture={(fixture) =>
+                                          handleAddLineItemFromFixture(section.id, fixture)
+                                        }
                                       />
                                     ))
                                   )}
@@ -1136,12 +1193,14 @@ export function EstimateGrid({
 interface SectionBlockProps {
   section: LocalSection;
   pricingConfig: PricingConfig;
+  projectId: string;
   addingItemSectionId: string | null;
   addingItemGroupName: string | null;  // lifted from EstimateGrid — single source of truth
   filteredTypicals: Typical[];
   typicalSearch: string;
   typicalMultiplier: string;
   insertTypicalSectionId: string | null;
+  insertFixtureSectionId: string | null;
   onQtyChange: (liId: string, val: string) => void;
   onLineItemFieldChange: (liId: string, field: string, value: string | number | null) => void;
   onDeleteSection: () => void;
@@ -1156,17 +1215,22 @@ interface SectionBlockProps {
   onSelectTypical: (typical: Typical) => void;
   onTypicalSearchChange: (v: string) => void;
   onTypicalMultiplierChange: (v: string) => void;
+  onInsertFixtureClick: () => void;
+  onCancelInsertFixture: () => void;
+  onSelectFixture: (fixture: FixtureScheduleEntry) => void;
 }
 
 function SectionBlock({
   section,
   pricingConfig,
+  projectId,
   addingItemSectionId,
   addingItemGroupName,
   filteredTypicals,
   typicalSearch,
   typicalMultiplier,
   insertTypicalSectionId,
+  insertFixtureSectionId,
   onQtyChange,
   onLineItemFieldChange,
   onDeleteSection,
@@ -1181,11 +1245,15 @@ function SectionBlock({
   onSelectTypical,
   onTypicalSearchChange,
   onTypicalMultiplierChange,
+  onInsertFixtureClick,
+  onCancelInsertFixture,
+  onSelectFixture,
 }: SectionBlockProps) {
   const [isOpen, setIsOpen] = useState(false);
   const isLighting = section.name === "Lighting";
   const isAddingItems = addingItemSectionId === section.id;
   const isInsertingTypical = insertTypicalSectionId === section.id;
+  const isInsertingFixture = insertFixtureSectionId === section.id;
 
   // Subsection/group state
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
@@ -1427,8 +1495,8 @@ function SectionBlock({
                 <Button size="icon-xs" onClick={handleCreateSubsection}><Check className="w-3 h-3" /></Button>
                 <Button size="icon-xs" variant="ghost" onClick={() => { setAddingSubsection(false); setNewSubsectionName(""); }}><X className="w-3 h-3" /></Button>
               </div>
-            ) : !isAddingItems && !isInsertingTypical ? (
-              <div className="flex items-center gap-2">
+            ) : !isAddingItems && !isInsertingTypical && !isInsertingFixture ? (
+              <div className="flex items-center gap-2 flex-wrap">
                 <Button size="xs" variant="ghost" onClick={() => onAddLineItemClick(null)}>
                   <Plus className="w-3 h-3 mr-1" /> Add Line Item
                 </Button>
@@ -1438,6 +1506,11 @@ function SectionBlock({
                 <Button size="xs" variant="ghost" onClick={() => setAddingSubsection(true)}>
                   <Plus className="w-3 h-3 mr-1" /> Add Subsection
                 </Button>
+                {isLighting && (
+                  <Button size="xs" variant="ghost" className="text-amber-600 hover:text-amber-800" onClick={onInsertFixtureClick}>
+                    <Zap className="w-3 h-3 mr-1" /> From Fixture Schedule
+                  </Button>
+                )}
               </div>
             ) : isAddingItems ? (
               <ItemSearchPanel
@@ -1445,6 +1518,12 @@ function SectionBlock({
                 onCancel={onCancelAddItem}
                 keepOpenAfterSelect
                 groupLabel={addingItemGroupName ?? undefined}
+              />
+            ) : isInsertingFixture ? (
+              <FixtureSchedulePanel
+                projectId={projectId}
+                onSelect={onSelectFixture}
+                onCancel={onCancelInsertFixture}
               />
             ) : (
               <TypicalSearchPanel
@@ -1762,6 +1841,128 @@ interface TypicalSearchPanelProps {
   onMultiplierChange: (v: string) => void;
   onSelect: (typical: Typical) => void;
   onCancel: () => void;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FixtureSchedulePanel
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface FixtureSchedulePanelProps {
+  projectId: string;
+  onSelect: (fixture: FixtureScheduleEntry) => void;
+  onCancel: () => void;
+}
+
+function fmtFixtureCost(n: number | null | undefined) {
+  if (n == null || n === 0) return null;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+}
+
+function FixtureSchedulePanel({ projectId, onSelect, onCancel }: FixtureSchedulePanelProps) {
+  const supabase = createClient();
+  const [fixtures, setFixtures] = useState<FixtureScheduleEntry[]>([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [addedTypes, setAddedTypes] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    supabase
+      .from("fixture_schedules")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("sort_order")
+      .then(({ data }) => {
+        setFixtures((data ?? []) as FixtureScheduleEntry[]);
+        setLoading(false);
+      });
+  }, [projectId]); // eslint-disable-line
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return fixtures;
+    return fixtures.filter(
+      (f) =>
+        f.type_code.toLowerCase().includes(q) ||
+        f.description.toLowerCase().includes(q)
+    );
+  }, [fixtures, search]);
+
+  function handleSelect(fixture: FixtureScheduleEntry) {
+    onSelect(fixture);
+    setAddedTypes((prev) => new Set([...prev, fixture.type_code]));
+  }
+
+  return (
+    <div className="rounded-lg border bg-card shadow-md p-3 space-y-2 max-w-xl">
+      <div className="flex items-center gap-2">
+        <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+        <div className="relative flex-1">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter by type code or description…"
+            className="h-7 text-xs pl-7 pr-2"
+          />
+        </div>
+        <Button size="xs" variant="outline" onClick={onCancel}>Done</Button>
+      </div>
+
+      <div className="max-h-52 overflow-y-auto rounded border divide-y">
+        {loading ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">Loading fixture schedule…</div>
+        ) : fixtures.length === 0 ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+            No fixtures in schedule yet.{" "}
+            <span className="text-primary">Add them on the Fixture Schedule page first.</span>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">No matches</div>
+        ) : (
+          filtered.map((fixture) => (
+            <button
+              key={fixture.id}
+              onClick={() => handleSelect(fixture)}
+              className={cn(
+                "w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors",
+                addedTypes.has(fixture.type_code) && "bg-emerald-50/60 dark:bg-emerald-950/20"
+              )}
+            >
+              {/* Type badge */}
+              <span className="font-mono text-[10px] bg-muted border rounded px-1.5 py-0.5 shrink-0 min-w-[2rem] text-center">
+                {fixture.type_code || "—"}
+              </span>
+              {/* Description */}
+              <span className="text-xs flex-1 truncate">{fixture.description}</span>
+              {/* Stats */}
+              <div className="flex items-center gap-2 shrink-0 text-[10px] tabular-nums">
+                {fixture.watts != null && fixture.watts > 0 && (
+                  <span className="text-amber-600 font-medium">{fixture.watts}W</span>
+                )}
+                {fixture.avg_length != null && fixture.avg_length > 0 && (
+                  <span className="text-muted-foreground">{fixture.avg_length}ft</span>
+                )}
+                {fmtFixtureCost(fixture.equipment_cost) && (
+                  <span className="text-muted-foreground">{fmtFixtureCost(fixture.equipment_cost)}</span>
+                )}
+              </div>
+              {addedTypes.has(fixture.type_code) && (
+                <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+              )}
+            </button>
+          ))
+        )}
+      </div>
+
+      {!loading && fixtures.length > 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          {filtered.length} of {fixtures.length} fixture type{fixtures.length !== 1 ? "s" : ""}
+          {" · "}Click a fixture to add it as a line item. Use the Type column to set quantities.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function TypicalSearchPanel({
