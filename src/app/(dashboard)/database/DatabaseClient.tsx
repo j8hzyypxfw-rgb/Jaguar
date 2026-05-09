@@ -26,6 +26,11 @@ function fmtHrs(n: number | null | undefined) {
   return n.toFixed(4);
 }
 
+function fmtNum(n: number | null | undefined, decimals = 4) {
+  if (n == null || n === 0) return "—";
+  return n.toFixed(decimals);
+}
+
 // ── Edit Modal ────────────────────────────────────────────────────────────────
 
 function EditModal({
@@ -38,22 +43,25 @@ function EditModal({
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Partial<Item>>({
-    code: item.code,
-    description: item.description,
-    category: item.category,
-    unit_of_measure: item.unit_of_measure,
-    material_cost: item.material_cost ?? 0,
-    man_hours: item.man_hours ?? 0,
-    equipment_cost: item.equipment_cost ?? 0,
-    excavation_cost: item.excavation_cost ?? 0,
-    sub_cost: item.sub_cost ?? 0,
+    code:             item.code,
+    description:      item.description,
+    category:         item.category,
+    unit_of_measure:  item.unit_of_measure,
+    material_cost:    item.material_cost    ?? 0,
+    man_hours:        item.man_hours        ?? 0,
+    equipment_cost:   item.equipment_cost   ?? 0,
+    excavation_cost:  item.excavation_cost  ?? 0,
+    sub_cost:         item.sub_cost         ?? 0,
+    watts:            item.watts            ?? null,
+    avg_length:       item.avg_length       ?? null,
+    cu_lbs_per_ft:    item.cu_lbs_per_ft    ?? null,
+    alum_lbs_per_ft:  item.alum_lbs_per_ft  ?? null,
   });
   const [saving, setSaving] = useState(false);
   const firstRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { firstRef.current?.focus(); }, []);
 
-  // Close on backdrop click or Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
     window.addEventListener("keydown", onKey);
@@ -64,9 +72,11 @@ function EditModal({
     return (e: React.ChangeEvent<HTMLInputElement>) =>
       setDraft((p) => ({ ...p, [field]: e.target.value }));
   }
-  function setNum(field: keyof Item) {
-    return (e: React.ChangeEvent<HTMLInputElement>) =>
-      setDraft((p) => ({ ...p, [field]: parseFloat(e.target.value) || 0 }));
+  function setNum(field: keyof Item, nullable = false) {
+    return (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = e.target.value === "" ? null : parseFloat(e.target.value) || 0;
+      setDraft((p) => ({ ...p, [field]: nullable ? v : (v ?? 0) }));
+    };
   }
 
   async function handleSave() {
@@ -78,18 +88,16 @@ function EditModal({
   }
 
   const inputCls = "h-8 text-sm";
-  const numCls = inputCls + " text-right tabular-nums";
+  const numCls   = inputCls + " text-right tabular-nums";
 
   return (
-    /* Backdrop */
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      {/* Panel */}
-      <div className="bg-card border rounded-xl shadow-2xl w-[520px] max-w-[95vw] flex flex-col">
+      <div className="bg-card border rounded-xl shadow-2xl w-[600px] max-w-[95vw] flex flex-col max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b">
+        <div className="flex items-center justify-between px-5 py-4 border-b sticky top-0 bg-card z-10">
           <div>
             <h2 className="text-sm font-semibold">Edit Item</h2>
             <p className="text-xs text-muted-foreground mt-0.5 font-mono">{item.code}</p>
@@ -101,38 +109,36 @@ function EditModal({
 
         {/* Fields */}
         <div className="px-5 py-4 grid grid-cols-2 gap-x-4 gap-y-3">
-          {/* Code */}
+          {/* Code + UOM */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Code</Label>
             <Input ref={firstRef} className={inputCls + " font-mono"} value={draft.code ?? ""} onChange={setStr("code")} />
           </div>
-          {/* UOM */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Unit of Measure</Label>
             <Input className={inputCls} value={draft.unit_of_measure ?? ""} onChange={setStr("unit_of_measure")} />
           </div>
-          {/* Description (full width) */}
+          {/* Description */}
           <div className="col-span-2 flex flex-col gap-1.5">
             <Label className="text-xs">Description</Label>
             <Input className={inputCls} value={draft.description ?? ""} onChange={setStr("description")} />
           </div>
-          {/* Category (full width) */}
+          {/* Category */}
           <div className="col-span-2 flex flex-col gap-1.5">
             <Label className="text-xs">Category</Label>
             <Input className={inputCls} value={draft.category ?? ""} onChange={setStr("category")} />
           </div>
 
-          {/* Divider */}
           <div className="col-span-2 border-t my-1" />
+          <p className="col-span-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide -mb-1">Unit Costs</p>
 
-          {/* Cost fields */}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Material Cost / Unit</Label>
+            <Label className="text-xs">Material Cost</Label>
             <Input type="number" step="0.0001" className={numCls} value={draft.material_cost ?? 0} onChange={setNum("material_cost")} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Man Hours</Label>
-            <Input type="number" step="0.0001" className={numCls} value={draft.man_hours ?? 0} onChange={setNum("man_hours")} />
+            <Input type="number" step="0.000001" className={numCls} value={draft.man_hours ?? 0} onChange={setNum("man_hours")} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Equipment Cost</Label>
@@ -146,10 +152,30 @@ function EditModal({
             <Label className="text-xs">Sub Cost</Label>
             <Input type="number" step="0.01" className={numCls} value={draft.sub_cost ?? 0} onChange={setNum("sub_cost")} />
           </div>
+
+          <div className="col-span-2 border-t my-1" />
+          <p className="col-span-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide -mb-1">Electrical Properties</p>
+
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Watts</Label>
+            <Input type="number" step="0.01" className={numCls} placeholder="—" value={draft.watts ?? ""} onChange={setNum("watts", true)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Avg Length (ft)</Label>
+            <Input type="number" step="0.01" className={numCls} placeholder="—" value={draft.avg_length ?? ""} onChange={setNum("avg_length", true)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Cu Lbs / Ft</Label>
+            <Input type="number" step="0.000001" className={numCls} placeholder="—" value={draft.cu_lbs_per_ft ?? ""} onChange={setNum("cu_lbs_per_ft", true)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Alum Lbs / Ft</Label>
+            <Input type="number" step="0.000001" className={numCls} placeholder="—" value={draft.alum_lbs_per_ft ?? ""} onChange={setNum("alum_lbs_per_ft", true)} />
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t bg-muted/30 rounded-b-xl">
+        <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t bg-muted/30 sticky bottom-0">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={handleSave} disabled={saving || !draft.code?.trim() || !draft.description?.trim()}>
             {saving ? "Saving…" : "Save Changes"}
@@ -166,6 +192,7 @@ const EMPTY_NEW: Partial<Item> = {
   code: "", description: "", category: "", unit_of_measure: "",
   material_cost: 0, man_hours: 0, equipment_cost: 0,
   excavation_cost: 0, sub_cost: 0,
+  watts: null, avg_length: null, cu_lbs_per_ft: null, alum_lbs_per_ft: null,
 };
 
 function AddItemRow({
@@ -182,7 +209,12 @@ function AddItemRow({
 
   function f(field: keyof typeof draft) {
     return (e: React.ChangeEvent<HTMLInputElement>) =>
-      setDraft((p) => ({ ...p, [field]: e.target.type === "number" ? parseFloat(e.target.value) || 0 : e.target.value }));
+      setDraft((p) => ({
+        ...p,
+        [field]: e.target.type === "number"
+          ? (e.target.value === "" ? null : parseFloat(e.target.value) || 0)
+          : e.target.value,
+      }));
   }
 
   async function handleSave() {
@@ -192,34 +224,24 @@ function AddItemRow({
     setSaving(false);
   }
 
-  const inputCls = "h-7 text-xs px-1.5";
+  const c = "h-7 text-xs px-1.5";
+  const n = c + " text-right tabular-nums";
 
   return (
     <tr className="bg-primary/5 border-b-2 border-primary/20">
-      <td className="px-2 py-1.5">
-        <Input autoFocus className={inputCls + " font-mono w-28"} placeholder="CODE" value={draft.code ?? ""} onChange={f("code")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input className={inputCls} placeholder="Description" value={draft.description ?? ""} onChange={f("description")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input className={inputCls + " w-20"} placeholder="Category" value={draft.category ?? ""} onChange={f("category")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input className={inputCls + " w-16"} placeholder="ea" value={draft.unit_of_measure ?? ""} onChange={f("unit_of_measure")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input type="number" step="0.0001" className={inputCls + " w-24 text-right"} placeholder="0.0000" value={draft.material_cost ?? 0} onChange={f("material_cost")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input type="number" step="0.0001" className={inputCls + " w-20 text-right"} placeholder="0.0000" value={draft.man_hours ?? 0} onChange={f("man_hours")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input type="number" step="0.01" className={inputCls + " w-20 text-right"} placeholder="0.00" value={draft.equipment_cost ?? 0} onChange={f("equipment_cost")} />
-      </td>
-      <td className="px-2 py-1.5">
-        <Input type="number" step="0.01" className={inputCls + " w-20 text-right"} placeholder="0.00" value={draft.excavation_cost ?? 0} onChange={f("excavation_cost")} />
-      </td>
+      <td className="px-2 py-1.5"><Input autoFocus className={c + " font-mono w-28"} placeholder="CODE"        value={draft.code ?? ""}             onChange={f("code")} /></td>
+      <td className="px-2 py-1.5"><Input            className={c + " min-w-[160px]"} placeholder="Description" value={draft.description ?? ""}       onChange={f("description")} /></td>
+      <td className="px-2 py-1.5"><Input            className={c + " w-28"}          placeholder="Category"    value={draft.category ?? ""}           onChange={f("category")} /></td>
+      <td className="px-2 py-1.5"><Input            className={c + " w-14"}          placeholder="ea"          value={draft.unit_of_measure ?? ""}    onChange={f("unit_of_measure")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.0001"   className={n + " w-24"} placeholder="0.0000" value={draft.material_cost ?? ""}   onChange={f("material_cost")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.000001" className={n + " w-20"} placeholder="0.0000" value={draft.man_hours ?? ""}       onChange={f("man_hours")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.01"     className={n + " w-20"} placeholder="0.00"   value={draft.equipment_cost ?? ""}  onChange={f("equipment_cost")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.01"     className={n + " w-20"} placeholder="0.00"   value={draft.excavation_cost ?? ""} onChange={f("excavation_cost")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.01"     className={n + " w-20"} placeholder="0.00"   value={draft.sub_cost ?? ""}        onChange={f("sub_cost")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.01"     className={n + " w-16"} placeholder="—"      value={draft.watts ?? ""}           onChange={f("watts")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.01"     className={n + " w-16"} placeholder="—"      value={draft.avg_length ?? ""}      onChange={f("avg_length")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.000001" className={n + " w-20"} placeholder="—"      value={draft.cu_lbs_per_ft ?? ""}   onChange={f("cu_lbs_per_ft")} /></td>
+      <td className="px-2 py-1.5"><Input type="number" step="0.000001" className={n + " w-20"} placeholder="—"      value={draft.alum_lbs_per_ft ?? ""} onChange={f("alum_lbs_per_ft")} /></td>
       <td className="px-2 py-1.5">
         <div className="flex gap-1">
           <Button size="icon" className="h-7 w-7" onClick={handleSave} disabled={saving || !draft.code?.trim() || !draft.description?.trim()}>
@@ -237,6 +259,7 @@ function AddItemRow({
 // ── Main component ────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 100;
+const TOTAL_COLS = 14; // code + desc + cat + uom + material + mhrs + equip + excav + sub + watts + avg_lgth + cu + alum + actions
 
 export function DatabaseClient({
   categories,
@@ -255,7 +278,6 @@ export function DatabaseClient({
   const [page, setPage] = useState(1);
   const [catCounts, setCatCounts] = useState(categories);
 
-  // UI state
   const [addingItem, setAddingItem] = useState(false);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -283,7 +305,6 @@ export function DatabaseClient({
     setLoading(false);
   }, [supabase]);
 
-  // Debounced search
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
@@ -293,7 +314,7 @@ export function DatabaseClient({
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [search, activeCategory, fetchItems]);
 
-  useEffect(() => { fetchItems(search, activeCategory, page); }, [page]);// eslint-disable-line
+  useEffect(() => { fetchItems(search, activeCategory, page); }, [page]); // eslint-disable-line
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
 
@@ -320,7 +341,6 @@ export function DatabaseClient({
       .eq("id", id);
     if (error) { toast.error(error.message); return; }
     setItems((prev) => prev.map((it) => it.id === id ? { ...it, ...updates } : it));
-    // If category changed, refresh sidebar counts
     const changed = items.find((i) => i.id === id);
     if (changed && updates.category && changed.category !== updates.category) {
       setCatCounts((prev) => {
@@ -346,12 +366,9 @@ export function DatabaseClient({
 
   // ── Categories sidebar ─────────────────────────────────────────────────────
 
-  const sortedCats = Object.entries(catCounts)
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
+  const sortedCats = Object.entries(catCounts).sort((a, b) => a[0].localeCompare(b[0]));
   const totalPages = Math.ceil(count / PAGE_SIZE);
 
-  // Group items by category for section headers
   const grouped: { cat: string; items: Item[] }[] = [];
   let lastCat = "";
   for (const item of items) {
@@ -440,22 +457,26 @@ export function DatabaseClient({
 
         {/* Table */}
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-xs border-collapse min-w-[900px]">
+          <table className="w-full text-xs border-collapse min-w-[1600px]">
             <thead className="sticky top-0 z-10 bg-muted border-b shadow-sm">
               <tr>
-                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-32">Code</th>
+                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-32 whitespace-nowrap">Code</th>
                 <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Description</th>
-                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-36">Category</th>
-                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-14">UOM</th>
-                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-28">Material</th>
-                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24">M/Hrs</th>
-                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24">Equipment</th>
-                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24">Excav</th>
+                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-32 whitespace-nowrap">Category</th>
+                <th className="text-left px-3 py-2.5 font-medium text-muted-foreground w-14 whitespace-nowrap">UOM</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-28 whitespace-nowrap">Material</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">M/Hrs</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">Equipment</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">Excav</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">Sub</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-20 whitespace-nowrap">Watts</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-20 whitespace-nowrap">Avg Lgth</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">Cu Lbs/Ft</th>
+                <th className="text-right px-3 py-2.5 font-medium text-muted-foreground w-24 whitespace-nowrap">Alum Lbs/Ft</th>
                 <th className="w-12" />
               </tr>
             </thead>
             <tbody>
-              {/* Add item row */}
               {addingItem && (
                 <AddItemRow
                   defaultCategory={activeCategory}
@@ -466,10 +487,9 @@ export function DatabaseClient({
 
               {grouped.map(({ cat, items: rows }) => (
                 <>
-                  {/* Category group header */}
                   {!activeCategory && (
                     <tr key={`hdr-${cat}`} className="bg-muted/60 border-y border-border/60">
-                      <td colSpan={9} className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase">
+                      <td colSpan={TOTAL_COLS} className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase">
                         {cat} <span className="font-normal normal-case ml-1">({rows.length})</span>
                       </td>
                     </tr>
@@ -477,36 +497,33 @@ export function DatabaseClient({
 
                   {rows.map((item) => (
                     confirmDeleteId === item.id ? (
-                      /* Delete confirm row */
                       <tr key={item.id} className="bg-destructive/10 border-b border-destructive/20">
-                        <td colSpan={6} className="px-3 py-2 text-xs">
+                        <td colSpan={TOTAL_COLS - 2} className="px-3 py-2 text-xs">
                           <span className="font-medium text-destructive">Delete {item.code}?</span>
                           <span className="text-muted-foreground ml-2">This item will be removed from the database.</span>
                         </td>
-                        <td colSpan={3} className="px-3 py-2 text-right">
+                        <td colSpan={2} className="px-3 py-2 text-right">
                           <div className="flex items-center justify-end gap-2">
-                            <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => handleDelete(item.id)}>
-                              Delete
-                            </Button>
-                            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setConfirmDeleteId(null)}>
-                              Cancel
-                            </Button>
+                            <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => handleDelete(item.id)}>Delete</Button>
+                            <Button size="sm" variant="ghost"       className="h-7 text-xs" onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
                           </div>
                         </td>
                       </tr>
                     ) : (
                       <tr key={item.id} className="group border-b border-border/40 hover:bg-muted/30 transition-colors">
-                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">{item.code}</td>
-                        <td className="px-3 py-2 text-xs max-w-xs">
-                          <p className="truncate">{item.description}</p>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[140px]">{item.category}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">{item.unit_of_measure}</td>
-                        <td className="px-3 py-2 text-xs text-right tabular-nums">{fmtCost(item.material_cost)}</td>
-                        <td className="px-3 py-2 text-xs text-right tabular-nums">{fmtHrs(item.man_hours)}</td>
-                        <td className="px-3 py-2 text-xs text-right tabular-nums">{fmtCost(item.equipment_cost)}</td>
-                        <td className="px-3 py-2 text-xs text-right tabular-nums">{fmtCost(item.excavation_cost)}</td>
-                        {/* Actions */}
+                        <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">{item.code}</td>
+                        <td className="px-3 py-2 max-w-xs"><p className="truncate">{item.description}</p></td>
+                        <td className="px-3 py-2 text-muted-foreground truncate max-w-[128px]">{item.category}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{item.unit_of_measure}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtCost(item.material_cost)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtHrs(item.man_hours)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtCost(item.equipment_cost)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtCost(item.excavation_cost)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtCost(item.sub_cost)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtNum(item.watts, 2)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtNum(item.avg_length, 2)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtNum(item.cu_lbs_per_ft, 6)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtNum(item.alum_lbs_per_ft, 6)}</td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
                             <button
@@ -533,7 +550,7 @@ export function DatabaseClient({
 
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                  <td colSpan={TOTAL_COLS} className="px-4 py-16 text-center text-sm text-muted-foreground">
                     No items found{search ? ` for "${search}"` : ""}.
                   </td>
                 </tr>
@@ -561,7 +578,6 @@ export function DatabaseClient({
         )}
       </div>
 
-      {/* Edit modal */}
       {editingItem && (
         <EditModal
           item={editingItem}
