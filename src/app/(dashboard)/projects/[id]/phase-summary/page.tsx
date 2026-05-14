@@ -52,7 +52,9 @@ export default async function PhaseSummaryPage({
     );
   }
 
-  // Pull phases → areas → sections (sections carry the rollup totals)
+  // Pull phases → areas → sections → line_items
+  // We sum line_items on the client because section rollup columns aren't
+  // kept in sync (rollupEstimate only updates the estimate-level totals).
   const { data: phases } = await supabase
     .from("phases")
     .select(
@@ -61,8 +63,10 @@ export default async function PhaseSummaryPage({
          id, name, sort_order,
          sections(
            id, name, sort_order,
-           total_equipment, total_excavation, total_subs,
-           total_material, total_mhrs, total_installed
+           line_items(
+             total_equipment, total_excavation, total_sub,
+             total_material, total_mhrs, total_installed
+           )
          )
        )`
     )

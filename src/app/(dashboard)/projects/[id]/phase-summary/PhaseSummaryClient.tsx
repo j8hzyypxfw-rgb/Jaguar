@@ -10,16 +10,20 @@ import * as XLSX from "xlsx";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+interface LineItemRollup {
+  total_equipment: number;
+  total_excavation: number;
+  total_sub: number;
+  total_material: number;
+  total_mhrs: number;
+  total_installed: number;
+}
+
 interface Section {
   id: string;
   name: string;
   sort_order: number;
-  total_equipment: number;
-  total_excavation: number;
-  total_subs: number;
-  total_material: number;
-  total_mhrs: number;
-  total_installed: number;
+  line_items: LineItemRollup[];
 }
 
 interface Area {
@@ -118,15 +122,28 @@ export function PhaseSummaryClient({
       (ph.areas ?? []).forEach((area) => {
         (area.sections ?? []).forEach((s) => {
           const name = (s.name || "Unnamed").trim();
-          const labor = (s.total_mhrs ?? 0) * mhrsMult * laborRate;
+          // Sum the section's line items live (cached section rollups aren't maintained)
+          let eq = 0, ex = 0, sub = 0, mat = 0, mh = 0, inst = 0;
+          (s.line_items ?? []).forEach((li) => {
+            eq   += li.total_equipment  ?? 0;
+            ex   += li.total_excavation ?? 0;
+            sub  += li.total_sub        ?? 0;
+            mat  += li.total_material   ?? 0;
+            mh   += li.total_mhrs       ?? 0;
+            inst += li.total_installed  ?? 0;
+          });
+          const labor = mh * mhrsMult * laborRate;
+          // If line items don't have total_installed populated, fall back to
+          // material + equipment + excavation + subs + labor
+          const installed = inst > 0 ? inst : (mat + eq + ex + sub + labor);
           const cell: SectionTotals = {
-            equipment:  s.total_equipment  ?? 0,
-            excavation: s.total_excavation ?? 0,
-            subs:       s.total_subs       ?? 0,
-            material:   s.total_material   ?? 0,
-            mhrs:       s.total_mhrs       ?? 0,
+            equipment:  eq,
+            excavation: ex,
+            subs:       sub,
+            material:   mat,
+            mhrs:       mh,
             labor$:     labor,
-            installed:  s.total_installed  ?? 0,
+            installed,
           };
 
           if (!pivot[name]) pivot[name] = {};
