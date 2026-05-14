@@ -10,10 +10,10 @@ export default async function FixtureMatrixPage({
   const { id: projectId } = await params;
   const supabase = await createClient();
 
-  // Project (need name + lighting_markup_factor)
+  // Project
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, lighting_markup_factor")
+    .select("id, name")
     .eq("id", projectId)
     .single();
 
@@ -32,41 +32,46 @@ export default async function FixtureMatrixPage({
     return (
       <div className="p-6">
         <p className="text-muted-foreground text-sm">
-          No estimate found for this project. Create an estimate first.
+          No estimate found. Create an estimate first, then add fixture line
+          items in the T&amp;E grid using the ⚡ Fixture Schedule panel.
         </p>
       </div>
     );
   }
 
-  // Fixture schedule for this project
+  // Fixture schedule for this project (for watts, avg_length, equipment_cost display)
   const { data: fixtures } = await supabase
     .from("fixture_schedules")
-    .select("id, type_code, description, watts, avg_length, equipment_cost, notes")
+    .select("id, type_code, description, watts, avg_length, equipment_cost")
     .eq("project_id", projectId)
     .order("sort_order");
 
-  // Phases → Areas (flatten to a list of areas with phase info)
+  // Phases → Areas with sections → line items that have a fixture_type
+  // This is the source of truth for counts — no separate fixture_counts table needed
   const { data: phases } = await supabase
     .from("phases")
-    .select("id, name, sort_order, areas(id, name, sort_order)")
+    .select(
+      `id, name, sort_order,
+       areas(
+         id, name, sort_order,
+         sections(
+           id, name,
+           line_items(
+             id, fixture_type, total_qty, description,
+             unit_material, unit_watts, unit_avg_length
+           )
+         )
+       )`
+    )
     .eq("estimate_id", estimate.id)
     .order("sort_order");
-
-  // Existing fixture counts
-  const { data: counts } = await supabase
-    .from("fixture_counts")
-    .select("id, fixture_schedule_id, area_id, qty")
-    .eq("project_id", projectId);
 
   return (
     <FixtureMatrixClient
       projectId={projectId}
       projectName={project.name}
-      estimateId={estimate.id}
-      lightingMarkupFactor={project.lighting_markup_factor ?? 1.2262}
       fixtures={fixtures ?? []}
-      phases={phases ?? []}
-      initialCounts={counts ?? []}
+      phases={(phases as Parameters<typeof FixtureMatrixClient>[0]["phases"]) ?? []}
     />
   );
 }
