@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers, Grid3X3 } from "lucide-react";
+import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers, Grid3X3, BarChart3 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
@@ -145,6 +145,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           icon={Layers}
           title="Typicals"
           description="Pre-built assemblies. Insert a typical to explode into all component line items instantly."
+        />
+        <ActionCard
+          href={`/projects/${id}/phase-summary`}
+          icon={BarChart3}
+          title="Phase Summary"
+          description="Pivot table of section totals across phases. See Lighting, Controls, Power, etc. rolled up per phase."
         />
       </div>
     </div>
