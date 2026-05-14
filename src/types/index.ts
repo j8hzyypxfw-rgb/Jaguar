@@ -91,6 +91,7 @@ export interface Project {
   excavation_mult: number;
   hours_per_week: number;
   sales_tax_rate: number;
+  lighting_markup_factor: number;
   bond_rate_tier1: number;
   bond_rate_tier2: number;
   bond_rate_tier3: number;

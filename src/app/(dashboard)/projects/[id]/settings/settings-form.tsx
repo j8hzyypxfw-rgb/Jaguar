@@ -62,10 +62,11 @@ export function SettingsForm({ project }: { project: Project }) {
     profit_pct:      project.profit_pct,
     sub_markup_pct:  project.sub_markup_pct,
     sales_tax_rate:  project.sales_tax_rate,
-    equipment_mult:  project.equipment_mult,
-    materials_mult:  project.materials_mult,
-    mhrs_mult:       project.mhrs_mult,
-    excavation_mult: project.excavation_mult,
+    equipment_mult:          project.equipment_mult,
+    materials_mult:          project.materials_mult,
+    mhrs_mult:               project.mhrs_mult,
+    excavation_mult:         project.excavation_mult,
+    lighting_markup_factor:  project.lighting_markup_factor,
   });
 
   function setInfoField(field: string, value: string) {
@@ -369,10 +370,11 @@ export function SettingsForm({ project }: { project: Project }) {
           </CardHeader>
           <CardContent className="grid grid-cols-4 gap-4">
             {[
-              { label: "Equipment",  field: "equipment_mult" },
-              { label: "Materials",  field: "materials_mult" },
-              { label: "Man Hours",  field: "mhrs_mult",      hint: "1.10 = 10% inefficiency" },
-              { label: "Excavation", field: "excavation_mult", hint: "5.0 = 400% adder" },
+              { label: "Equipment",               field: "equipment_mult" },
+              { label: "Materials",               field: "materials_mult" },
+              { label: "Man Hours",               field: "mhrs_mult",             hint: "1.10 = 10% inefficiency" },
+              { label: "Excavation",              field: "excavation_mult",        hint: "5.0 = 400% adder" },
+              { label: "Lighting Markup Factor",  field: "lighting_markup_factor", hint: "1.2262 = 22.62% markup on fixture costs" },
             ].map(({ label, field, hint }) => (
               <div key={field}>
                 <Label className="text-xs">{label}</Label>
