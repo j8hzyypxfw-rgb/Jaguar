@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers } from "lucide-react";
+import { ArrowLeft, Calculator, FileText, Settings2, Users, Package, Receipt, Truck, Layers, Grid3X3 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
@@ -121,6 +121,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           icon={Package}
           title="Fixture Schedule"
           description="Map fixture type letters to fixture specifications, watts, and run lengths."
+        />
+        <ActionCard
+          href={`/projects/${id}/fixture-matrix`}
+          icon={Grid3X3}
+          title="Fixture Count Matrix"
+          description="Enter fixture quantities by type and area. Export to Excel for ALA quotes. Sync counts into estimate."
         />
         <ActionCard
           href={`/projects/${id}/gen-expenses`}
