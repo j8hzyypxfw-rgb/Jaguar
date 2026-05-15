@@ -163,13 +163,6 @@ export interface Area {
   name: string;
   sort_order: number;
   is_active: boolean;
-  // rollup totals (summed from sections below)
-  total_equipment: number;
-  total_excavation: number;
-  total_subs: number;
-  total_material: number;
-  total_mhrs: number;
-  total_installed: number;
   sections?: Section[];
 }
 
@@ -185,12 +178,6 @@ export interface Phase {
   lighting_branch_mult: number | null;
   power_branch_mult: number | null;
   mhrs_mult_override: number | null;
-  total_equipment: number;
-  total_excavation: number;
-  total_subs: number;
-  total_material: number;
-  total_mhrs: number;
-  total_installed: number;
   areas?: Area[];       // NEW: phases contain areas
   sections?: Section[]; // legacy, kept for compat
 }
@@ -205,12 +192,6 @@ export interface Section {
   section_number: number | null;
   name: string;
   sort_order: number;
-  total_equipment: number;
-  total_excavation: number;
-  total_subs: number;
-  total_material: number;
-  total_mhrs: number;
-  total_installed: number;
   line_items?: LineItem[];
 }
 
