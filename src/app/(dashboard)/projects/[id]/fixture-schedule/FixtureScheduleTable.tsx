@@ -68,7 +68,7 @@ function DescriptionSearchCell({
       setLoading(true);
       const { data } = await supabase
         .from("items")
-        .select("id, code, description, watts, avg_length, equipment_cost, category")
+        .select("id, code, description, watts, avg_length, equipment_cost, man_hours, category")
         .eq("is_active", true)
         .or(`description.ilike.%${q}%,code.ilike.%${q}%`)
         .order("code")
@@ -124,6 +124,9 @@ function DescriptionSearchCell({
                   )}
                   {item.avg_length != null && item.avg_length > 0 && (
                     <span>{item.avg_length} ft</span>
+                  )}
+                  {item.man_hours != null && item.man_hours > 0 && (
+                    <span className="text-blue-600">{item.man_hours.toFixed(1)} hrs</span>
                   )}
                   {item.equipment_cost != null && item.equipment_cost > 0 && (
                     <span>{fmtCost(item.equipment_cost)}</span>
@@ -222,6 +225,7 @@ export function FixtureScheduleTable({
         watts:          item.watts          ?? null,
         avg_length:     item.avg_length     ?? null,
         equipment_cost: item.equipment_cost ?? null,
+        man_hours:      item.man_hours      ?? null,
       };
       updateLocal(fixtureId, updates);
       markSaving(fixtureId, true);
@@ -279,6 +283,7 @@ export function FixtureScheduleTable({
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground w-20">Watts</th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground w-28">Avg Run (ft)</th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground w-32">Equip Cost</th>
+              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground w-24">Hrs</th>
               <th className="text-left px-3 py-2.5 font-medium text-xs text-muted-foreground">Notes</th>
               <th className="px-2 py-2.5 w-10" />
             </tr>
@@ -287,7 +292,7 @@ export function FixtureScheduleTable({
           <tbody className="divide-y">
             {fixtures.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-sm text-muted-foreground">
+                <td colSpan={10} className="px-3 py-10 text-center text-sm text-muted-foreground">
                   No fixture types yet. Click "Add Fixture Type" to begin.
                 </td>
               </tr>
@@ -406,6 +411,24 @@ export function FixtureScheduleTable({
                   />
                 </td>
 
+                {/* Man Hours — controlled (auto-fill target) */}
+                <td className="px-2 py-1.5">
+                  <Input
+                    className={numCellCls + " w-full"}
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={fixture.man_hours ?? ""}
+                    placeholder="0.0"
+                    onChange={(e) =>
+                      updateLocal(fixture.id, { man_hours: e.target.value ? Number(e.target.value) : null })
+                    }
+                    onBlur={(e) =>
+                      saveField(fixture.id, "man_hours", e.target.value ? Number(e.target.value) : null)
+                    }
+                  />
+                </td>
+
                 {/* Notes — uncontrolled */}
                 <td className="px-2 py-1.5">
                   <Input
@@ -438,7 +461,7 @@ export function FixtureScheduleTable({
               <td className="px-3 py-3 text-right tabular-nums text-primary text-base">
                 {fmtCost(totalEquipCost)}
               </td>
-              <td colSpan={2} />
+              <td colSpan={3} />
             </tr>
           </tfoot>
         </table>

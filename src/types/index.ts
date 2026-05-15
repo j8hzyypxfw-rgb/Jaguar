@@ -117,6 +117,7 @@ export interface FixtureScheduleEntry {
   watts: number | null;
   avg_length: number | null;
   equipment_cost: number | null;
+  man_hours: number | null;
   notes: string | null;
   sort_order: number;
 }

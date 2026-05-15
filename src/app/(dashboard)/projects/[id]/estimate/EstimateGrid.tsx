@@ -62,7 +62,7 @@ function fmtQty(n: number) {
 }
 
 function fmtHrs(n: number) {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(n);
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ export function EstimateGrid({
         unit_excavation: 0,
         unit_sub:        0,
         unit_material:   fixture.equipment_cost ?? 0,
-        unit_mhrs:       0,
+        unit_mhrs:       fixture.man_hours ?? 0,
         unit_ot_hrs:     0,
         unit_watts:      fixture.watts ?? null,
         unit_avg_length: fixture.avg_length ?? null,
@@ -1942,6 +1942,9 @@ function FixtureSchedulePanel({ projectId, onSelect, onCancel }: FixtureSchedule
                 )}
                 {fixture.avg_length != null && fixture.avg_length > 0 && (
                   <span className="text-muted-foreground">{fixture.avg_length}ft</span>
+                )}
+                {fixture.man_hours != null && fixture.man_hours > 0 && (
+                  <span className="text-blue-600">{fixture.man_hours.toFixed(1)}hr</span>
                 )}
                 {fmtFixtureCost(fixture.equipment_cost) && (
                   <span className="text-muted-foreground">{fmtFixtureCost(fixture.equipment_cost)}</span>
