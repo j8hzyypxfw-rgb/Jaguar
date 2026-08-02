@@ -4,17 +4,45 @@ import { useState, useCallback } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
 import { rollupEstimate } from "@/lib/rollupEstimate";
+
+type PayType = "salary" | "sub" | "hourly";
+
+const PAY_TYPES: { value: PayType; label: string; hint: string }[] = [
+  { value: "hourly", label: "Hourly",      hint: "Own employee, paid by the hour" },
+  { value: "sub",    label: "Subcontract", hint: "Subcontracted body, billed hourly" },
+  { value: "salary", label: "Salary",      hint: "Annual salary, prorated over the job" },
+];
+
+/** Salaried roles are exempt — only these pay types get OT inputs. */
+const HOURLY_TYPES: PayType[] = ["hourly", "sub"];
+/** Undefined means migration 010 hasn't run yet; treat those rows as hourly, which
+ *  is what `computeTotal` does with them, so display and math stay consistent. */
+const isHourly = (t: string | null | undefined) =>
+  HOURLY_TYPES.includes((t ?? "hourly") as PayType);
+
+const WEEKS_PER_YEAR = 52;
 
 interface IndirectRow {
   id: string;
   estimate_id: string;
   description: string;
   labor_type: string;
+  pay_type: string;
   labor_rate: number | null;
+  annual_salary: number | null;
   people: number;
   hours_per_wk: number;
+  ot_hours_per_wk: number | null;
+  ot_multiplier: number | null;
   weeks: number | null;
   total_cost: number;
   sort_order: number;
@@ -28,12 +56,31 @@ function fmt(n: number) {
   }).format(n);
 }
 
+/**
+ * Salary is annualized: the yearly figure is divided into weeks and charged for the
+ * weeks the role is actually on the job. Hourly and sub are straight time plus OT at
+ * a multiple of the base rate. Both scale by headcount.
+ */
 function computeTotal(row: Partial<IndirectRow>): number {
+  const people = row.people ?? 1;
+  const weeks = row.weeks ?? 0;
+
+  if (row.pay_type === "salary") {
+    return ((row.annual_salary ?? 0) / WEEKS_PER_YEAR) * weeks * people;
+  }
+
   const rate = row.labor_rate ?? 0;
-  const hrs = row.hours_per_wk ?? 0;
+  const straight = (row.hours_per_wk ?? 0) * rate;
+  const overtime = (row.ot_hours_per_wk ?? 0) * rate * (row.ot_multiplier ?? 1.5);
+  return (straight + overtime) * weeks * people;
+}
+
+/** Weekly cost per person — shown under the total so the math is checkable. */
+function weeklyPerPerson(row: IndirectRow): number {
   const weeks = row.weeks ?? 0;
   const people = row.people ?? 1;
-  return rate * hrs * weeks * people;
+  if (weeks === 0 || people === 0) return 0;
+  return computeTotal(row) / weeks / people;
 }
 
 export function IndirectLaborTable({
@@ -66,9 +113,13 @@ export function IndirectLaborTable({
       estimate_id: estimateId,
       description: "",
       labor_type: "hourly",
+      pay_type: "hourly",
       labor_rate: 0,
+      annual_salary: 0,
       people: 1,
-      hours_per_wk: 0,
+      hours_per_wk: 40,
+      ot_hours_per_wk: 0,
+      ot_multiplier: 1.5,
       weeks: 0,
       total_cost: 0,
       sort_order: rows.length,
@@ -140,19 +191,25 @@ export function IndirectLaborTable({
                 Role / Description
               </th>
               <th className="text-left px-3 py-2.5 font-medium text-xs text-muted-foreground">
-                Type
+                Pay Type
               </th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
                 People
               </th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
-                Hrs/Wk
-              </th>
-              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
                 Weeks
               </th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
-                Rate ($/hr)
+                Rate
+              </th>
+              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
+                Hrs/Wk
+              </th>
+              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
+                OT Hrs/Wk
+              </th>
+              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
+                OT ×
               </th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">
                 Total
@@ -164,7 +221,7 @@ export function IndirectLaborTable({
             {rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={8}
+                  colSpan={10}
                   className="px-3 py-8 text-center text-sm text-muted-foreground"
                 >
                   No indirect labor rows yet. Click "Add Row" to begin.
@@ -185,12 +242,21 @@ export function IndirectLaborTable({
                   />
                 </td>
                 <td className="px-2 py-1.5">
-                  <Input
-                    className="h-8 text-sm border-transparent hover:border-border focus:border-border w-28"
-                    defaultValue={row.labor_type}
-                    placeholder="hourly"
-                    onBlur={(e) => saveField(row.id, "labor_type", e.target.value)}
-                  />
+                  <Select
+                    value={row.pay_type ?? "hourly"}
+                    onValueChange={(v) => saveField(row.id, "pay_type", v ?? "hourly")}
+                  >
+                    <SelectTrigger size="sm" className="w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PAY_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </td>
                 <td className="px-2 py-1.5">
                   <Input
@@ -209,38 +275,97 @@ export function IndirectLaborTable({
                     type="number"
                     min={0}
                     step={0.5}
-                    defaultValue={row.hours_per_wk}
-                    onBlur={(e) =>
-                      saveField(row.id, "hours_per_wk", Number(e.target.value))
-                    }
-                  />
-                </td>
-                <td className="px-2 py-1.5">
-                  <Input
-                    className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-20 ml-auto"
-                    type="number"
-                    min={0}
-                    step={0.5}
                     defaultValue={row.weeks ?? 0}
                     onBlur={(e) =>
                       saveField(row.id, "weeks", Number(e.target.value))
                     }
                   />
                 </td>
+
+                {/* Rate — $/hr for hourly & sub, $/yr for salary */}
                 <td className="px-2 py-1.5">
-                  <Input
-                    className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-28 ml-auto"
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    defaultValue={row.labor_rate ?? 0}
-                    onBlur={(e) =>
-                      saveField(row.id, "labor_rate", Number(e.target.value))
-                    }
-                  />
+                  <div className="flex items-center justify-end gap-1">
+                    <Input
+                      key={`rate-${row.pay_type}`}
+                      className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-28"
+                      type="number"
+                      min={0}
+                      step={row.pay_type === "salary" ? 1000 : 0.01}
+                      defaultValue={
+                        row.pay_type === "salary"
+                          ? row.annual_salary ?? 0
+                          : row.labor_rate ?? 0
+                      }
+                      onBlur={(e) =>
+                        saveField(
+                          row.id,
+                          row.pay_type === "salary" ? "annual_salary" : "labor_rate",
+                          Number(e.target.value)
+                        )
+                      }
+                    />
+                    <span className="text-[10px] text-muted-foreground w-6 shrink-0">
+                      {row.pay_type === "salary" ? "/yr" : "/hr"}
+                    </span>
+                  </div>
                 </td>
+
+                {/* Hrs/Wk, OT Hrs/Wk, OT × — hourly and sub only */}
+                {isHourly(row.pay_type) ? (
+                  <>
+                    <td className="px-2 py-1.5">
+                      <Input
+                        className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-20 ml-auto"
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        defaultValue={row.hours_per_wk}
+                        onBlur={(e) =>
+                          saveField(row.id, "hours_per_wk", Number(e.target.value))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Input
+                        className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-20 ml-auto"
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        defaultValue={row.ot_hours_per_wk ?? 0}
+                        onBlur={(e) =>
+                          saveField(row.id, "ot_hours_per_wk", Number(e.target.value))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Input
+                        className="h-8 text-sm text-right border-transparent hover:border-border focus:border-border w-16 ml-auto"
+                        type="number"
+                        min={1}
+                        step={0.1}
+                        defaultValue={row.ot_multiplier ?? 1.5}
+                        onBlur={(e) =>
+                          saveField(row.id, "ot_multiplier", Number(e.target.value))
+                        }
+                      />
+                    </td>
+                  </>
+                ) : (
+                  <td
+                    colSpan={3}
+                    className="px-3 py-1.5 text-center text-xs text-muted-foreground"
+                  >
+                    Salaried — exempt from OT
+                  </td>
+                )}
+
                 <td className="px-3 py-1.5 text-right tabular-nums font-medium">
                   {fmt(row.total_cost ?? 0)}
+                  {(row.weeks ?? 0) > 0 && (
+                    <span className="block text-[10px] font-normal text-muted-foreground">
+                      {fmt(weeklyPerPerson(row))}/wk ea
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-1.5">
                   <button
@@ -256,7 +381,7 @@ export function IndirectLaborTable({
           </tbody>
           <tfoot className="border-t-2 bg-muted/50">
             <tr className="font-semibold">
-              <td colSpan={6} className="px-3 py-3 text-right text-sm">
+              <td colSpan={8} className="px-3 py-3 text-right text-sm">
                 Grand Total
               </td>
               <td className="px-3 py-3 text-right tabular-nums text-primary text-base">

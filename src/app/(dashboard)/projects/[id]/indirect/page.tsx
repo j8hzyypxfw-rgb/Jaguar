@@ -42,7 +42,7 @@ export default async function IndirectLaborPage({
     : { data: [] };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center gap-3 mb-6 no-print">
         <Link
           href={`/projects/${id}`}

@@ -53,6 +53,19 @@ ALTER TABLE sections ADD COLUMN IF NOT EXISTS kind text;
 undefined on every row. Adding or renaming a section also fails (PostgREST rejects the
 write on an unknown column). Reads are unaffected; the estimate page still loads.
 
+```sql
+-- 010_indirect_labor_pay_type.sql — run the full file, it has a backfill UPDATE
+ALTER TABLE indirect_labor
+  ADD COLUMN IF NOT EXISTS pay_type        text          NOT NULL DEFAULT 'hourly',
+  ADD COLUMN IF NOT EXISTS annual_salary   numeric(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS ot_hours_per_wk numeric(6,2)  DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS ot_multiplier   numeric(5,3)  DEFAULT 1.5;
+```
+
+**Symptom if you skip 010:** the indirect labor page still reads (`select *`), and rows
+fall back to hourly so the math stays right, but **Add Row fails** — the insert names
+columns that don't exist — and nothing you type in the OT or salary fields saves.
+
 There is no `006` — it was a `fixture_counts` table that got designed, then deleted
 before it was ever run (see "Fixture matrix" below). The gap is intentional.
 
@@ -143,6 +156,16 @@ phases — "Lighting total for Phase 2", etc. Metric toggle: Total Installed / M
 Labor $ / Man Hours. Sections sort by electrical-trade convention (Service →
 Distribution → Feeders → Power → Lighting → Controls → Devices → Conduit → Wire → Fire
 Alarm → Data → Security → AV → Site), unrecognized names fall to alphabetical.
+
+**Indirect labor pay types (010).** Each role picks salary / subcontract / hourly.
+Salary takes an annual figure and prorates it (`annual / 52 × weeks × people`) with no OT
+inputs — salaried roles are exempt. Sub and hourly take a rate plus `ot_hours_per_wk` at
+`ot_multiplier` (1.5 default). Sub and hourly compute identically; they're split because
+one is a vendor cost and one is payroll, and burden will likely diverge later. The Rate
+column binds to `annual_salary` or `labor_rate` depending on the row's pay type. The old
+free-text `labor_type` column is no longer surfaced (the role comes from `description`)
+but is left in the table — drop it once the existing values are confirmed dead.
+`rollupEstimate` only ever reads `total_cost`, so none of this touched the rollup.
 
 **BOM is material-only and aggregated.** `/projects/[id]/bom` dropped M/Hrs, Total Hrs
 and Total Installed — Installed is labor-burdened, so it doesn't belong on a sheet you
