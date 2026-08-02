@@ -37,43 +37,72 @@ export default async function BOMPage({ params }: { params: Promise<{ id: string
     if (phaseIds.length > 0) {
       const { data: sections } = await supabase
         .from("sections")
-        .select("id, name, phase_id, phases(name)")
+        .select("id")
         .in("phase_id", phaseIds);
 
       const sectionIds = (sections ?? []).map((s) => s.id);
-      const sectionMap = Object.fromEntries((sections ?? []).map((s: any) => [s.id, s]));
 
       if (sectionIds.length > 0) {
         const { data: lineItems } = await supabase
           .from("line_items")
           .select(`
-            id, code, description, unit_of_measure, section_id,
-            unit_material, total_material,
-            unit_mhrs, total_mhrs, total_installed, total_qty,
+            id, code, description, unit_of_measure,
+            unit_material, total_material, total_qty,
             items(category)
           `)
           .in("section_id", sectionIds)
-          .gt("total_qty", 0)
-          .order("sort_order");
+          .gt("total_qty", 0);
 
-        rows = (lineItems ?? []).map((r: any) => {
-          const sec = sectionMap[r.section_id];
-          return {
-            code:            r.code ?? "",
-            description:     r.description ?? "",
-            category:        r.items?.category ?? "other",
-            unit_of_measure: r.unit_of_measure ?? "",
-            quantity:        r.total_qty ?? 0,
-            unit_material:   r.unit_material ?? 0,
-            total_material:  r.total_material ?? 0,
-            unit_mhrs:       r.unit_mhrs ?? 0,
-            total_mhrs:      r.total_mhrs ?? 0,
-            unit_installed:  r.total_qty > 0 ? (r.total_installed / r.total_qty) : 0,
-            total_installed: r.total_installed ?? 0,
-            phase:           sec?.phases?.name ?? "",
-            section:         sec?.name ?? "",
-          };
-        });
+        // Collapse line items for the same part into one purchasable row. Identity is
+        // the item code (else the description), the UOM, *and* the unit cost — the
+        // section/area a line was taken off in is deliberately ignored.
+        //
+        // Unit cost is part of the key on purpose. Lines for the same part can carry
+        // different costs (manual overrides, fixture costs snapshotted at insert), and
+        // a BOM row has to state one real price you could buy at. Blending them into an
+        // average would invent a price that isn't quoted anywhere, so differing costs
+        // stay on separate rows instead.
+        const merged = new Map<string, BOMRow>();
+
+        for (const r of (lineItems ?? []) as any[]) {
+          const code = r.code ?? "";
+          const description = r.description ?? "";
+          const uom = r.unit_of_measure ?? "";
+          const unitMaterial = r.unit_material ?? 0;
+          const key = [
+            (code || description).trim().toLowerCase(),
+            uom.trim().toLowerCase(),
+            unitMaterial.toFixed(6),
+          ].join("|");
+
+          const existing = merged.get(key);
+          if (existing) {
+            existing.quantity += r.total_qty ?? 0;
+            existing.total_material += r.total_material ?? 0;
+            existing.line_count += 1;
+          } else {
+            merged.set(key, {
+              code,
+              description,
+              category:        r.items?.category ?? "other",
+              unit_of_measure: uom,
+              quantity:        r.total_qty ?? 0,
+              unit_material:   unitMaterial,
+              total_material:  r.total_material ?? 0,
+              line_count:      1,
+            });
+          }
+        }
+
+        rows = [...merged.values()]
+          .sort((a, b) => {
+            // Coded parts first in code order, uncoded ones after by description
+            if (!a.code && b.code) return 1;
+            if (a.code && !b.code) return -1;
+            const byName = (a.code || a.description).localeCompare(b.code || b.description);
+            // Same part at two prices — keep them adjacent, cheapest first
+            return byName !== 0 ? byName : a.unit_material - b.unit_material;
+          });
       }
     }
   }

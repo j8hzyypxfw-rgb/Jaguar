@@ -23,7 +23,8 @@ function fmtQty(n: number) {
 export function BOMTable({ rows }: { rows: BOMRow[] }) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
-  const [groupBy, setGroupBy] = useState<"none" | "category" | "phase">("category");
+  // No "group by phase" — rows are merged across phases, so a row has no single phase
+  const [groupBy, setGroupBy] = useState<"none" | "category">("category");
 
   const filtered = useMemo(() => {
     let r = rows;
@@ -38,18 +39,16 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
     return r;
   }, [rows, search, category]);
 
-  const totals = useMemo(() => ({
-    material: filtered.reduce((s, r) => s + r.total_material, 0),
-    mhrs:     filtered.reduce((s, r) => s + r.total_mhrs, 0),
-    installed: filtered.reduce((s, r) => s + r.total_installed, 0),
-  }), [filtered]);
+  const totalMaterial = useMemo(
+    () => filtered.reduce((s, r) => s + r.total_material, 0),
+    [filtered]
+  );
 
   // Group rows
   const grouped = useMemo(() => {
     if (groupBy === "none") return { "All Items": filtered };
-    const key = groupBy === "category" ? "category" : "phase";
     return filtered.reduce((acc, r) => {
-      const g = r[key] || "Other";
+      const g = r.category || "Other";
       acc[g] = acc[g] ?? [];
       acc[g].push(r);
       return acc;
@@ -81,13 +80,12 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
             ))}
           </SelectContent>
         </Select>
-        <Select value={groupBy} onValueChange={(v) => setGroupBy(v as "none" | "category" | "phase")}>
+        <Select value={groupBy} onValueChange={(v) => setGroupBy(v as "none" | "category")}>
           <SelectTrigger className="w-36">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="category">Group by Category</SelectItem>
-            <SelectItem value="phase">Group by Phase</SelectItem>
             <SelectItem value="none">No Grouping</SelectItem>
           </SelectContent>
         </Select>
@@ -107,9 +105,6 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
               <th className="text-left px-2 py-2.5 font-medium text-xs text-muted-foreground">UOM</th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Unit Matl</th>
               <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Total Matl</th>
-              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">M/Hrs</th>
-              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Total Hrs</th>
-              <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Total Installed</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -117,7 +112,7 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
               <>
                 {groupBy !== "none" && (
                   <tr key={`g-${group}`} className="bg-muted/30">
-                    <td colSpan={9} className="px-3 py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
+                    <td colSpan={6} className="px-3 py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
                       {group.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
                       <span className="ml-2 font-normal">({groupRows.length} items)</span>
                     </td>
@@ -126,28 +121,28 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
                 {groupRows.map((row, i) => (
                   <tr key={`${group}-${i}`} className="hover:bg-muted/20 transition-colors">
                     <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{row.code}</td>
-                    <td className="px-3 py-2 max-w-xs truncate">{row.description}</td>
+                    <td className="px-3 py-2 max-w-xs">
+                      <span className="truncate">{row.description}</span>
+                      {row.line_count > 1 && (
+                        <span
+                          className="ml-2 text-[10px] text-muted-foreground whitespace-nowrap"
+                          title={`Merged from ${row.line_count} estimate lines`}
+                        >
+                          ({row.line_count} lines)
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtQty(row.quantity)}</td>
                     <td className="px-2 py-2 text-xs text-muted-foreground">{row.unit_of_measure}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-xs">{fmt(row.unit_material)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums font-medium">{fmt(row.total_material)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-xs">{row.unit_mhrs.toFixed(3)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtQty(row.total_mhrs)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums font-semibold text-primary">{fmt(row.total_installed)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-semibold text-primary">{fmt(row.total_material)}</td>
                   </tr>
                 ))}
                 {groupBy !== "none" && (
                   <tr key={`sub-${group}`} className="bg-muted/20 border-t border-b font-medium">
                     <td colSpan={5} className="px-3 py-2 text-xs text-right text-muted-foreground">Subtotal</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-sm">
-                      {fmt(groupRows.reduce((s, r) => s + r.total_material, 0))}
-                    </td>
-                    <td className="px-3 py-2" />
-                    <td className="px-3 py-2 text-right tabular-nums text-sm">
-                      {fmtQty(groupRows.reduce((s, r) => s + r.total_mhrs, 0))}
-                    </td>
                     <td className="px-3 py-2 text-right tabular-nums text-sm text-primary">
-                      {fmt(groupRows.reduce((s, r) => s + r.total_installed, 0))}
+                      {fmt(groupRows.reduce((s, r) => s + r.total_material, 0))}
                     </td>
                   </tr>
                 )}
@@ -156,11 +151,8 @@ export function BOMTable({ rows }: { rows: BOMRow[] }) {
           </tbody>
           <tfoot className="border-t-2 bg-muted/50">
             <tr className="font-semibold">
-              <td colSpan={5} className="px-3 py-3 text-right text-sm">Grand Total</td>
-              <td className="px-3 py-3 text-right tabular-nums">{fmt(totals.material)}</td>
-              <td className="px-3 py-3" />
-              <td className="px-3 py-3 text-right tabular-nums">{fmtQty(totals.mhrs)}</td>
-              <td className="px-3 py-3 text-right tabular-nums text-primary text-base">{fmt(totals.installed)}</td>
+              <td colSpan={5} className="px-3 py-3 text-right text-sm">Total Material</td>
+              <td className="px-3 py-3 text-right tabular-nums text-primary text-base">{fmt(totalMaterial)}</td>
             </tr>
           </tfoot>
         </table>

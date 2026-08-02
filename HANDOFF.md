@@ -11,13 +11,9 @@ Working notes for continuing development. Not user-facing docs.
 The Supabase CLI is **not linked** (`npx supabase db push` fails with "Cannot find
 project ref"). Every migration must be pasted into the SQL editor by hand.
 
-Migrations 001–004 are applied. These are **committed but NOT yet run**:
-
-```sql
--- 005_lighting_markup_factor.sql
-ALTER TABLE projects
-  ADD COLUMN lighting_markup_factor NUMERIC(6,4) NOT NULL DEFAULT 1.2262;
-```
+Migrations 001–005 are applied (verified 2026-08-02 by probing the columns through
+PostgREST — an unknown column comes back as `42703`, which is a quick way to check what
+actually landed without the CLI). These are **committed but NOT yet run**:
 
 ```sql
 -- 007_drop_zombie_rollups.sql  (see "Rollups" below for why)
@@ -47,10 +43,20 @@ ALTER TABLE fixture_schedules
   ADD COLUMN IF NOT EXISTS man_hours numeric(10,6) DEFAULT 0;
 ```
 
+```sql
+-- 009_section_kind.sql — run the full file, it has a backfill UPDATE after the ALTER
+ALTER TABLE sections ADD COLUMN IF NOT EXISTS kind text;
+```
+
+**Symptom if you skip 009:** every section behaves as a generic section — the Lighting
+⚡ fixture-schedule button and Type column disappear, because `kind` comes back
+undefined on every row. Adding or renaming a section also fails (PostgREST rejects the
+write on an unknown column). Reads are unaffected; the estimate page still loads.
+
 There is no `006` — it was a `fixture_counts` table that got designed, then deleted
 before it was ever run (see "Fixture matrix" below). The gap is intentional.
 
-**Symptom if you skip 005:** `/projects/[id]/settings` breaks. A missing column makes
+**The 404 trap (this is what 005 did before it was run):** a missing column makes
 PostgREST fail the whole `select`, the page's `if (!project) notFound()` fires, and you
 get a Next.js 404 that looks like a missing route. A 404 on a route that shows up in
 `next build` output is almost always a failed Supabase query, not a routing problem.
@@ -72,6 +78,14 @@ Project
   insert — `rollupEstimate` walks `phases → sections.phase_id → line_items`, so a
   section with a null `phase_id` silently drops out of the estimate totals.
 - `line_item_quantities` is dead. Quantity lives on `line_items.total_qty`.
+- **Sections have a `kind` slug (009) — behavior keys off it, never off `name`.**
+  `name` is a free-text label the user can rename; `kind` is what makes a section a
+  lighting section. Vocabulary and labels live in `src/lib/sectionKinds.ts`, which also
+  owns `DEFAULT_SECTIONS` (the 14 seeded into every new area). `kind` is nullable —
+  a section the user invents is `null` and gets generic behavior. New kinds go in that
+  file; the column is plain text with no CHECK, so no migration is needed. The rename
+  editor in the section header edits name and kind together, which is how you get a
+  second lighting section ("Lighting - Interior", kind `lighting`).
 
 ### Rollups — what's cached vs. computed
 
@@ -129,6 +143,25 @@ phases — "Lighting total for Phase 2", etc. Metric toggle: Total Installed / M
 Labor $ / Man Hours. Sections sort by electrical-trade convention (Service →
 Distribution → Feeders → Power → Lighting → Controls → Devices → Conduit → Wire → Fire
 Alarm → Data → Security → AV → Site), unrecognized names fall to alphabetical.
+
+**BOM is material-only and aggregated.** `/projects/[id]/bom` dropped M/Hrs, Total Hrs
+and Total Installed — Installed is labor-burdened, so it doesn't belong on a sheet you
+hand a supplier. Rows merge across the whole estimate in `bom/page.tsx`: key is code
+(else description) + UOM + **unit cost**. Cost is in the key deliberately — the same part
+at two prices stays on two rows, because a BOM row has to state a price you could
+actually buy at. Never average them. "Group by Phase" is gone; a merged row spans phases.
+
+**Cross-estimate propagation.** A ⟳ button on each line item row pushes that line's
+values to every other line item for the same part (`lineItemIdentity` = code/description
++ UOM), across all phases/areas/sections. The button only renders when the part is
+actually used elsewhere — `countIdentities` builds the counts once per render rather than
+scanning per row. Clicking opens a confirm dialog with two switches: **Pricing** (all six
+unit costs, on by default) and **Quantity** (off by default — it overwrites real takeoff
+numbers that usually differ per location). Targets keep whatever isn't being pushed, so
+totals are recomputed per row.
+
+This started as an automatic toast after every qty/cost edit; that was noise for a part
+like 3/4" EMT in a dozen sections. Deliberate button, not a prompt.
 
 **Items database.** ~9,000 rows upserted from `C:\Users\daled\OneDrive\Shared\db.xlsb`
 via `C:\Users\daled\upsert_items.py`. Categories are assigned by priority-ordered

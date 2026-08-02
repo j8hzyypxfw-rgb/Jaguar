@@ -7,6 +7,10 @@ export type EstimateType = "base" | "gmp" | "alternate" | "revision";
 export type PriceSource = "database" | "manual" | "quote" | "typical";
 export type QuoteStatus = "received" | "selected" | "rejected" | "pending";
 
+// Section kinds live in src/lib/sectionKinds.ts alongside their labels
+export type { SectionKind } from "@/lib/sectionKinds";
+import type { SectionKind } from "@/lib/sectionKinds";
+
 // ---------------------------------------------------------------------------
 // Master Database Item
 // ---------------------------------------------------------------------------
@@ -191,7 +195,8 @@ export interface Section {
   phase_id: string | null;    // legacy (kept for rollup compat); set on insert
   area_id: string | null;     // NEW: sections belong to an area
   section_number: number | null;
-  name: string;
+  name: string;               // display label only — never branch behavior on this
+  kind: SectionKind | null;   // stable slug that behavior keys off; null = custom
   sort_order: number;
   line_items?: LineItem[];
 }
@@ -378,18 +383,25 @@ export interface BidSummary {
 // ---------------------------------------------------------------------------
 // Bill of Materials row
 // ---------------------------------------------------------------------------
+/**
+ * One purchasable row on the Bill of Materials.
+ *
+ * A BOM row is material only — no hours, no labor-burdened installed cost — and is
+ * aggregated across the whole estimate: line items for the same part collapse into one
+ * row regardless of which phase/area/section they were taken off in. That's why there
+ * are no phase/section fields; a row spans all of them.
+ *
+ * Merging requires the same code (or description), UOM, *and* unit cost. The same part
+ * at two different prices stays on two rows — a BOM row must state a price you could
+ * actually buy at, never a blended average.
+ */
 export interface BOMRow {
   code: string;
   description: string;
   category: string;
   unit_of_measure: string;
   quantity: number;
-  unit_material: number;
+  unit_material: number;   // part of the merge key — never averaged
   total_material: number;
-  unit_mhrs: number;
-  total_mhrs: number;
-  unit_installed: number;
-  total_installed: number;
-  phase: string;
-  section: string;
+  line_count: number;      // estimate lines that rolled into this row
 }

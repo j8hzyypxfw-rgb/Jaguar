@@ -22,10 +22,33 @@ import {
   AlertTriangle,
   MapPin,
   Zap,
+  RefreshCw,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_SECTIONS,
+  SECTION_KINDS,
+  inferSectionKind,
+  type SectionKind,
+} from "@/lib/sectionKinds";
 import { createClient } from "@/lib/supabase/client";
 import { calcLineItemTotals } from "@/lib/pricing";
 import { rollupEstimate as sharedRollup } from "@/lib/rollupEstimate";
@@ -65,26 +88,8 @@ function fmtHrs(n: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Default sections seeded for every new area
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DEFAULT_SECTIONS = [
-  "Lighting",
-  "Lighting Control",
-  "Branch Power",
-  "HVAC",
-  "Equipment",
-  "Primary",
-  "Distribution",
-  "Em Distribution",
-  "Tele/Data",
-  "Fire Alarm",
-  "Audio/Visual",
-  "Security",
-  "Grounding",
-  "Temporary Power",
-];
+// Select can't carry a null value — sentinel for "no kind / custom section"
+const NO_KIND = "__none__";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local types
@@ -121,6 +126,92 @@ function updateSection(
     })),
   }));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-estimate propagation
+//
+// The same part gets taken off in many places. When a qty or a cost is corrected in
+// one section, the correction often applies everywhere that part appears — but not
+// always (a phase can legitimately be priced differently), so it never happens on its
+// own. The user pushes it deliberately, from the ⟳ button on the line they just fixed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** "The same item": the code when there is one, else the description, plus UOM. */
+function lineItemIdentity(li: {
+  code?: string | null;
+  description?: string | null;
+  unit_of_measure?: string | null;
+}): string {
+  const name = (li.code || li.description || "").trim().toLowerCase();
+  const uom = (li.unit_of_measure ?? "").trim().toLowerCase();
+  return `${name}|${uom}`;
+}
+
+/** Every line item elsewhere in the estimate that is the same part as `sourceId`. */
+function findMatchingLineItems(
+  phases: LocalPhase[],
+  sourceId: string,
+  identity: string
+): LocalLineItem[] {
+  const out: LocalLineItem[] = [];
+  for (const ph of phases) {
+    for (const area of ph.areas) {
+      for (const sec of area.sections) {
+        for (const li of sec.line_items) {
+          if (li.id !== sourceId && lineItemIdentity(li) === identity) out.push(li);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function mapLineItems(
+  phases: LocalPhase[],
+  ids: Set<string>,
+  updater: (li: LocalLineItem) => LocalLineItem
+): LocalPhase[] {
+  return phases.map((ph) => ({
+    ...ph,
+    areas: ph.areas.map((a) => ({
+      ...a,
+      sections: a.sections.map((s) =>
+        s.line_items.some((li) => ids.has(li.id))
+          ? { ...s, line_items: s.line_items.map((li) => (ids.has(li.id) ? updater(li) : li)) }
+          : s
+      ),
+    })),
+  }));
+}
+
+/**
+ * How many line items share each identity, so a row can tell whether it has anywhere
+ * to push to. Built once per render rather than scanned per row.
+ */
+function countIdentities(phases: LocalPhase[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const ph of phases) {
+    for (const area of ph.areas) {
+      for (const sec of area.sections) {
+        for (const li of sec.line_items) {
+          const key = lineItemIdentity(li);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+  }
+  return counts;
+}
+
+/** The unit costs that travel together when pricing is pushed across the estimate. */
+const UNIT_COST_FIELDS = [
+  "unit_material",
+  "unit_equipment",
+  "unit_excavation",
+  "unit_sub",
+  "unit_mhrs",
+  "unit_ot_hrs",
+] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -226,8 +317,19 @@ export function EstimateGrid({
   const [typicalMultiplier, setTypicalMultiplier] = useState("1");
   const [insertFixtureSectionId, setInsertFixtureSectionId] = useState<string | null>(null);
 
+  // ── Cross-estimate sync state ───────────────────────────────────────────────
+  const [syncSource, setSyncSource] = useState<LocalLineItem | null>(null);
+  const [syncPricing, setSyncPricing] = useState(true);
+  const [syncQuantity, setSyncQuantity] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+
   // ── Debounce map ────────────────────────────────────────────────────────────
   const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Latest phases, for callbacks that outlive the render they were created in
+  // (the debounced qty write, and the propagation toast's action button).
+  const phasesRef = useRef<LocalPhase[]>(phases);
+  useEffect(() => { phasesRef.current = phases; }, [phases]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Ensure estimate exists (create on demand)
@@ -287,10 +389,11 @@ export function EstimateGrid({
 
   // Seed default sections into a new area
   async function seedDefaultSections(phaseId: string, areaId: string) {
-    const rows = DEFAULT_SECTIONS.map((name, i) => ({
+    const rows = DEFAULT_SECTIONS.map((s, i) => ({
       phase_id: phaseId,  // kept for rollupEstimate compat
       area_id: areaId,
-      name,
+      name: s.name,
+      kind: s.kind,
       sort_order: i,
     }));
     const { data, error } = await supabase.from("sections").insert(rows).select();
@@ -398,7 +501,13 @@ export function EstimateGrid({
     }
     const { data, error } = await supabase
       .from("sections")
-      .insert({ phase_id: phaseId, area_id: areaId, name, sort_order: sortOrder })
+      .insert({
+        phase_id: phaseId,
+        area_id: areaId,
+        name,
+        kind: inferSectionKind(name),
+        sort_order: sortOrder,
+      })
       .select()
       .single();
     if (error) { console.error(error); return; }
@@ -419,6 +528,32 @@ export function EstimateGrid({
     );
     setNewSectionName("");
     setAddingSectionAreaId(null);
+  }
+
+  async function handleRenameSection(
+    sectionId: string,
+    areaId: string,
+    rawName: string,
+    kind: SectionKind | null
+  ) {
+    const name = rawName.trim();
+    if (!name) return;
+    await supabase.from("sections").update({ name, kind }).eq("id", sectionId);
+    setPhases((prev) =>
+      prev.map((p) => ({
+        ...p,
+        areas: p.areas.map((a) =>
+          a.id === areaId
+            ? {
+                ...a,
+                sections: a.sections.map((s) =>
+                  s.id === sectionId ? { ...s, name, kind } : s
+                ),
+              }
+            : a
+        ),
+      }))
+    );
   }
 
   async function handleDeleteSection(sectionId: string, areaId: string) {
@@ -758,6 +893,75 @@ export function EstimateGrid({
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Cross-estimate propagation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Copy the source line's values onto every other line item for the same part,
+   * across all phases / areas / sections.
+   *
+   * Pricing and quantity are separate switches because they carry different risk:
+   * pushing a corrected cost is nearly always right, while pushing a quantity
+   * overwrites real takeoff numbers that are usually meant to differ per location.
+   * Each target keeps whatever isn't being pushed, so totals are recomputed per row.
+   */
+  async function applyAcrossEstimate(
+    source: LocalLineItem,
+    opts: { pricing: boolean; quantity: boolean }
+  ) {
+    if (!opts.pricing && !opts.quantity) return;
+
+    // Read through the ref rather than the render closure — the dialog can sit open
+    // while other edits land.
+    const targets = findMatchingLineItems(
+      phasesRef.current,
+      source.id,
+      lineItemIdentity(source)
+    );
+    if (targets.length === 0) return;
+
+    const nextFor = (li: LocalLineItem) => {
+      const qty = opts.quantity ? source.total_qty : li.total_qty;
+      const costs = {
+        equipment:  opts.pricing ? source.unit_equipment  : li.unit_equipment,
+        excavation: opts.pricing ? source.unit_excavation : li.unit_excavation,
+        sub:        opts.pricing ? source.unit_sub        : li.unit_sub,
+        material:   opts.pricing ? source.unit_material   : li.unit_material,
+        mhrs:       opts.pricing ? source.unit_mhrs       : li.unit_mhrs,
+        ot_hrs:     opts.pricing ? source.unit_ot_hrs     : li.unit_ot_hrs,
+      };
+      return {
+        ...(opts.quantity && { total_qty: qty }),
+        ...(opts.pricing &&
+          Object.fromEntries(UNIT_COST_FIELDS.map((f) => [f, source[f]]))),
+        ...calcLineItemTotals(qty, costs, pricingConfig),
+      };
+    };
+
+    const patches = targets.map((li) => ({ id: li.id, patch: nextFor(li) }));
+    const ids = new Set(targets.map((li) => li.id));
+
+    setPhases((prev) => mapLineItems(prev, ids, (li) => ({ ...li, ...nextFor(li) })));
+
+    const results = await Promise.all(
+      patches.map((p) => supabase.from("line_items").update(p.patch).eq("id", p.id))
+    );
+    const failed = results.filter((r) => r.error).length;
+    await rollupEstimate();
+
+    const what = opts.pricing && opts.quantity ? "pricing and quantity"
+      : opts.pricing ? "pricing"
+      : "quantity";
+    if (failed > 0) {
+      toast.error(`Updated ${patches.length - failed} of ${patches.length} lines — ${failed} failed`);
+    } else {
+      toast.success(
+        `Applied ${what} to ${patches.length} line item${patches.length !== 1 ? "s" : ""}`
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Rollup
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -765,6 +969,30 @@ export function EstimateGrid({
     const eid = estimateId ?? estimate?.id;
     if (!eid) return;
     await sharedRollup(supabase, eid);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Filtered typicals
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // How many places each part appears — drives whether a row shows its sync button
+  const identityCounts = useMemo(() => countIdentities(phases), [phases]);
+
+  function openSyncDialog(li: LocalLineItem) {
+    setSyncSource(li);
+    setSyncPricing(true);
+    setSyncQuantity(false);
+  }
+
+  async function confirmSync() {
+    if (!syncSource) return;
+    setSyncBusy(true);
+    try {
+      await applyAcrossEstimate(syncSource, { pricing: syncPricing, quantity: syncQuantity });
+    } finally {
+      setSyncBusy(false);
+      setSyncSource(null);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -815,8 +1043,78 @@ export function EstimateGrid({
   // Render
   // ─────────────────────────────────────────────────────────────────────────
 
+  const syncTargetCount = syncSource
+    ? (identityCounts.get(lineItemIdentity(syncSource)) ?? 1) - 1
+    : 0;
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
+      {/* ── Apply-across-estimate confirmation ──────────────────────────────── */}
+      <AlertDialog open={!!syncSource} onOpenChange={(open) => { if (!open) setSyncSource(null); }}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apply across the estimate</AlertDialogTitle>
+            <AlertDialogDescription>
+              {syncSource?.code || syncSource?.description || "This item"} is used in{" "}
+              <span className="font-medium text-foreground">
+                {syncTargetCount} other place{syncTargetCount !== 1 ? "s" : ""}
+              </span>{" "}
+              across all phases, areas, and sections. Choose what to push there.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2.5 rounded-md border p-2.5 cursor-pointer hover:bg-muted/40">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={syncPricing}
+                onChange={(e) => setSyncPricing(e.target.checked)}
+              />
+              <span className="flex-1">
+                <span className="font-medium">Pricing</span>
+                <span className="block text-xs text-muted-foreground">
+                  Unit material, equipment, excavation, sub, man hours, OT — currently{" "}
+                  {fmt$(syncSource?.unit_material ?? 0)}/unit material,{" "}
+                  {fmtHrs(syncSource?.unit_mhrs ?? 0)} hrs/unit
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 rounded-md border p-2.5 cursor-pointer hover:bg-muted/40">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={syncQuantity}
+                onChange={(e) => setSyncQuantity(e.target.checked)}
+              />
+              <span className="flex-1">
+                <span className="font-medium">Quantity</span>
+                <span className="block text-xs text-muted-foreground">
+                  Overwrites the takeoff quantity everywhere with{" "}
+                  {fmtQty(syncSource?.total_qty ?? 0) || "0"}. Quantities are usually meant to
+                  differ per location — leave this off unless you mean it.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setSyncSource(null)} disabled={syncBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmSync}
+              disabled={syncBusy || (!syncPricing && !syncQuantity)}
+            >
+              {syncBusy
+                ? "Applying…"
+                : `Apply to ${syncTargetCount} line item${syncTargetCount !== 1 ? "s" : ""}`}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <header className="flex items-center gap-3 px-4 py-2.5 border-b bg-card shrink-0">
         <Link
@@ -1114,6 +1412,9 @@ export function EstimateGrid({
                                         onLineItemFieldChange={(liId, field, val) =>
                                           handleLineItemFieldChange(section.id, liId, field, val)
                                         }
+                                        onRenameSection={(name, kind) =>
+                                          handleRenameSection(section.id, area.id, name, kind)
+                                        }
                                         onDeleteSection={() =>
                                           handleDeleteSection(section.id, area.id)
                                         }
@@ -1130,6 +1431,8 @@ export function EstimateGrid({
                                         onSelectItem={(item, groupName) =>
                                           handleAddLineItem(section.id, item, groupName)
                                         }
+                                        identityCounts={identityCounts}
+                                        onSyncLineItem={openSyncDialog}
                                         onDeleteLineItem={(liId) =>
                                           handleDeleteLineItem(section.id, liId)
                                         }
@@ -1203,10 +1506,13 @@ interface SectionBlockProps {
   insertFixtureSectionId: string | null;
   onQtyChange: (liId: string, val: string) => void;
   onLineItemFieldChange: (liId: string, field: string, value: string | number | null) => void;
+  onRenameSection: (name: string, kind: SectionKind | null) => void;
   onDeleteSection: () => void;
   onAddLineItemClick: (groupName?: string | null) => void;
   onCancelAddItem: () => void;
   onSelectItem: (item: Item, groupName?: string | null) => void;
+  identityCounts: Map<string, number>;
+  onSyncLineItem: (li: LocalLineItem) => void;
   onDeleteLineItem: (liId: string) => void;
   onDeleteLineItems: (liIds: string[]) => void;
   onRenameLineItems: (liIds: string[], newGroupName: string) => void;
@@ -1233,10 +1539,13 @@ function SectionBlock({
   insertFixtureSectionId,
   onQtyChange,
   onLineItemFieldChange,
+  onRenameSection,
   onDeleteSection,
   onAddLineItemClick,
   onCancelAddItem,
   onSelectItem,
+  identityCounts,
+  onSyncLineItem,
   onDeleteLineItem,
   onDeleteLineItems,
   onRenameLineItems,
@@ -1250,7 +1559,12 @@ function SectionBlock({
   onSelectFixture,
 }: SectionBlockProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const isLighting = section.name === "Lighting";
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [editSectionName, setEditSectionName] = useState("");
+  const [editSectionKind, setEditSectionKind] = useState<SectionKind | null>(null);
+  // Behavior keys off `kind`, never `name` — renaming a section must not change
+  // what it can do. See src/lib/sectionKinds.ts.
+  const isLighting = section.kind === "lighting";
   const isAddingItems = addingItemSectionId === section.id;
   const isInsertingTypical = insertTypicalSectionId === section.id;
   const isInsertingFixture = insertFixtureSectionId === section.id;
@@ -1263,6 +1577,18 @@ function SectionBlock({
   // NOTE: activeGroupName is NOT local state — it lives in EstimateGrid as addingItemGroupName
   const [addingSubsection, setAddingSubsection] = useState(false);
   const [newSubsectionName, setNewSubsectionName] = useState("");
+
+  function startRename() {
+    setEditSectionName(section.name);
+    setEditSectionKind(section.kind ?? null);
+    setIsRenaming(true);
+  }
+
+  function commitRename() {
+    if (!editSectionName.trim()) return;
+    onRenameSection(editSectionName, editSectionKind);
+    setIsRenaming(false);
+  }
 
   function toggleGroup(idx: number) {
     setCollapsedGroups((prev) => {
@@ -1307,6 +1633,39 @@ function SectionBlock({
   return (
     <div className="rounded border bg-card">
       {/* Section header */}
+      {isRenaming ? (
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/20 border-b">
+          <Input
+            autoFocus
+            value={editSectionName}
+            onChange={(e) => setEditSectionName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") setIsRenaming(false);
+            }}
+            className="h-6 text-xs font-semibold w-44 px-2"
+          />
+          <span className="text-[10px] text-muted-foreground shrink-0">Type</span>
+          <Select
+            value={editSectionKind ?? NO_KIND}
+            onValueChange={(v) =>
+              setEditSectionKind(v === NO_KIND ? null : (v as SectionKind))
+            }
+          >
+            <SelectTrigger size="sm" className="h-6 text-xs w-40 py-0">
+              <SelectValue placeholder="Custom" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_KIND}>Custom</SelectItem>
+              {SECTION_KINDS.map((k) => (
+                <SelectItem key={k.kind} value={k.kind}>{k.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button size="icon-xs" onClick={commitRename}><Check className="w-3 h-3" /></Button>
+          <Button size="icon-xs" variant="ghost" onClick={() => setIsRenaming(false)}><X className="w-3 h-3" /></Button>
+        </div>
+      ) : (
       <div
         className="group/hdr flex items-center gap-2 px-3 py-1.5 bg-muted/40 border-b cursor-pointer select-none hover:bg-muted/60 transition-colors"
         onClick={() => setIsOpen((v) => !v)}
@@ -1319,14 +1678,24 @@ function SectionBlock({
           <span className="text-xs text-muted-foreground tabular-nums">{fmt$(secInstalled)}</span>
         )}
         <span className="text-xs text-muted-foreground tabular-nums">{fmtHrs(secHrs)} hrs</span>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDeleteSection(); }}
-          className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-0.5 rounded ml-1"
-          title="Remove section"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-0.5 opacity-0 group-hover/hdr:opacity-100 transition-opacity ml-1">
+          <button
+            onClick={(e) => { e.stopPropagation(); startRename(); }}
+            className="text-muted-foreground hover:text-foreground p-0.5 rounded"
+            title="Rename section"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDeleteSection(); }}
+            className="text-muted-foreground hover:text-destructive p-0.5 rounded"
+            title="Remove section"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
       </div>
+      )}
 
       {isOpen && (
         <>
@@ -1467,6 +1836,8 @@ function SectionBlock({
                           onQtyChange={(val) => onQtyChange(li.id, val)}
                           onFieldChange={(field, val) => onLineItemFieldChange(li.id, field, val)}
                           onDelete={() => onDeleteLineItem(li.id)}
+                          usedElsewhere={(identityCounts.get(lineItemIdentity(li)) ?? 1) - 1}
+                          onSync={() => onSyncLineItem(li)}
                         />
                       ))}
                     </React.Fragment>
@@ -1553,13 +1924,16 @@ interface LineItemRowProps {
   onQtyChange: (val: string) => void;
   onFieldChange: (field: string, value: string | number | null) => void;
   onDelete: () => void;
+  /** Count of *other* line items for this same part, across the whole estimate. */
+  usedElsewhere: number;
+  onSync: () => void;
   isTypicalChild?: boolean;
   isLighting?: boolean;
 }
 
 const cellInput = "w-full h-6 text-xs bg-transparent border border-transparent rounded px-1 hover:border-input focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring/50 transition-colors";
 
-function LineItemRow({ li, rowIdx, onQtyChange, onFieldChange, onDelete, isTypicalChild, isLighting }: LineItemRowProps) {
+function LineItemRow({ li, rowIdx, onQtyChange, onFieldChange, onDelete, usedElsewhere, onSync, isTypicalChild, isLighting }: LineItemRowProps) {
   const isEven = rowIdx % 2 === 0;
 
   return (
@@ -1661,15 +2035,26 @@ function LineItemRow({ li, rowIdx, onQtyChange, onFieldChange, onDelete, isTypic
         {li.total_installed > 0 ? fmt$(li.total_installed) : "—"}
       </td>
 
-      {/* Delete */}
-      <td className="px-1 py-0.5 text-center">
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-0.5 rounded"
-          title="Remove line item"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+      {/* Sync across estimate + delete */}
+      <td className="px-1 py-0.5 text-center whitespace-nowrap">
+        <div className="flex items-center justify-center gap-0.5">
+          {usedElsewhere > 0 && (
+            <button
+              onClick={onSync}
+              className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary p-0.5 rounded"
+              title={`Apply this line to the ${usedElsewhere} other place${usedElsewhere !== 1 ? "s" : ""} this item is used`}
+            >
+              <RefreshCw className="w-3 h-3" />
+            </button>
+          )}
+          <button
+            onClick={onDelete}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-0.5 rounded"
+            title="Remove line item"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
       </td>
     </tr>
   );
