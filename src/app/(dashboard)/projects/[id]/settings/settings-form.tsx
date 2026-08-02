@@ -47,6 +47,11 @@ export function SettingsForm({ project }: { project: Project }) {
     drawings_dated:  project.drawings_dated ?? "",
     notes:           project.notes ?? "",
     status:          project.status as ProjectStatus,
+    // Budget Summary document
+    address:         project.address ?? "",
+    job_number:      project.job_number ?? "",
+    drawings_label:  project.drawings_label ?? "",
+    clarifications:  project.clarifications ?? "",
   });
 
   const [params, setParams] = useState({
@@ -67,6 +72,9 @@ export function SettingsForm({ project }: { project: Project }) {
     mhrs_mult:               project.mhrs_mult,
     excavation_mult:         project.excavation_mult,
     lighting_markup_factor:  project.lighting_markup_factor,
+    inefficiency_pct:        project.inefficiency_pct ?? 0,
+    ot_labor_rate:           project.ot_labor_rate ?? 0,
+    square_feet:             project.square_feet ?? 0,
   });
 
   function setInfoField(field: string, value: string) {
@@ -97,6 +105,13 @@ export function SettingsForm({ project }: { project: Project }) {
         completion_date: info.completion_date || null,
         drawings_dated:  info.drawings_dated || null,
         notes:           info.notes || null,
+        address:         info.address || null,
+        job_number:      info.job_number || null,
+        drawings_label:  info.drawings_label || null,
+        clarifications:  info.clarifications || null,
+        // 0 means "not set" for these two — store null so the summary falls back
+        ot_labor_rate:   params.ot_labor_rate > 0 ? params.ot_labor_rate : null,
+        square_feet:     params.square_feet   > 0 ? params.square_feet   : null,
       };
 
       const { error } = await supabase
@@ -288,6 +303,73 @@ export function SettingsForm({ project }: { project: Project }) {
           </CardContent>
         </Card>
 
+        {/* Budget Summary document */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Budget Summary Document</CardTitle>
+            <CardDescription>
+              Header and footer text for the printed Budget Summary. Duration, manload and
+              OT hours are computed from the dates, hours/week and takeoff.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Address</Label>
+              <Input
+                value={info.address}
+                onChange={(e) => setInfoField("address", e.target.value)}
+                className="mt-1"
+                placeholder="881 Miller Road"
+              />
+            </div>
+
+            <div>
+              <Label>Job #</Label>
+              <Input
+                value={info.job_number}
+                onChange={(e) => setInfoField("job_number", e.target.value)}
+                className="mt-1"
+                placeholder="MM26-0199"
+              />
+            </div>
+
+            <div>
+              <Label>Drawings Label</Label>
+              <Input
+                value={info.drawings_label}
+                onChange={(e) => setInfoField("drawings_label", e.target.value)}
+                className="mt-1"
+                placeholder="90% Review Drwgs Dated 03/09/2026"
+              />
+            </div>
+
+            <div>
+              <Label>Square Feet</Label>
+              <Input
+                type="number"
+                step="1"
+                value={params.square_feet}
+                onChange={(e) => setParam("square_feet", e.target.value)}
+                className="mt-1"
+              />
+            </div>
+
+            <div className="col-span-2">
+              <Label>Clarifications &amp; Assumptions</Label>
+              <textarea
+                value={info.clarifications}
+                onChange={(e) => setInfoField("clarifications", e.target.value)}
+                rows={8}
+                className="mt-1 w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                placeholder={"One per line — each becomes a bullet on the printed summary.\nOur understanding is that ALL switchgear, panelboards, bus duct… are to be OFCI.\nExterior building supports for cable bus systems are by others."}
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                One assumption per line.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Labor Parameters */}
         <Card>
           <CardHeader>
@@ -305,6 +387,7 @@ export function SettingsForm({ project }: { project: Project }) {
               { label: "Foreman T&I",              field: "foreman_ti" },
               { label: "Foreman Rate (computed)",  field: "_foreman_rate", prefix: "$", readOnly: true, value: foremanRate.toFixed(2) },
               { label: "Hours/Week",               field: "hours_per_week" },
+              { label: "OT Labor Rate ($/hr)",     field: "ot_labor_rate", prefix: "$" },
             ].map(({ label, field, prefix, readOnly, value }) => (
               <div key={field}>
                 <Label className="text-xs">{label}</Label>
@@ -337,6 +420,7 @@ export function SettingsForm({ project }: { project: Project }) {
           </CardHeader>
           <CardContent className="grid grid-cols-3 gap-4">
             {[
+              { label: "Inefficiency %",       field: "inefficiency_pct", hint: "e.g. 0.47 = 47% of man-hours" },
               { label: "Sales Tax (material)", field: "tax_rate",        hint: "e.g. 1.0825 = 8.25%" },
               { label: "Job Expense %",        field: "job_exp_pct",     hint: "e.g. 0.25 = 25%" },
               { label: "Job Exp COW %",        field: "job_exp_cow_pct", hint: "e.g. 0.10 = 10%" },

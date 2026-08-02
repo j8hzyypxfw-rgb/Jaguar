@@ -66,6 +66,22 @@ ALTER TABLE indirect_labor
 fall back to hourly so the math stays right, but **Add Row fails** — the insert names
 columns that don't exist — and nothing you type in the OT or salary fields saves.
 
+```sql
+-- 011_budget_summary_fields.sql
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS inefficiency_pct numeric(6,4) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS ot_labor_rate    numeric(8,4),
+  ADD COLUMN IF NOT EXISTS address          text,
+  ADD COLUMN IF NOT EXISTS job_number       text,
+  ADD COLUMN IF NOT EXISTS square_feet      numeric(12,2),
+  ADD COLUMN IF NOT EXISTS drawings_label   text,
+  ADD COLUMN IF NOT EXISTS clarifications   text;
+```
+
+**Symptom if you skip 011:** `/projects/[id]/bid-summary` and `/settings` both 404 — the
+`select *` succeeds but the settings save and the summary's field reads fail. See the
+404 trap above.
+
 There is no `006` — it was a `fixture_counts` table that got designed, then deleted
 before it was ever run (see "Fixture matrix" below). The gap is intentional.
 
@@ -156,6 +172,33 @@ phases — "Lighting total for Phase 2", etc. Metric toggle: Total Installed / M
 Labor $ / Man Hours. Sections sort by electrical-trade convention (Service →
 Distribution → Feeders → Power → Lighting → Controls → Devices → Conduit → Wire → Fire
 Alarm → Data → Security → AV → Site), unrecognized names fall to alphabetical.
+
+**Budget Summary document (011).** `/projects/[id]/bid-summary` is now the phase-by-phase
+bid document from Ron's "Summary" sheet, replacing the single-column waterfall (which is
+still on screen below it as "Cost Breakdown", `no-print`, drilldowns intact).
+
+Math lives in `src/lib/budgetSummary.ts`. The key insight: the Excel's "Est Cost" sheet
+holds **raw** cost and the Summary sheet applies one identical markup chain to every
+column — `(JOB_EXP + JECOW) × (1+OH) × (1+PROFIT)`. `JOB_EXP` there is a 1+x figure
+(1.1238), which is why the formula has no leading 1; Jaguar's `job_exp_pct` is the same
+number expressed as 0.1238. This maps cleanly because `calcLineItemTotals` already stores
+`total_equipment` / `total_material` / `total_mhrs` raw — `total_installed` is the only
+figure carrying markup, and it is deliberately **not** used here, or the seven columns
+would double-count and stop summing to the bid.
+
+- Inefficiency $ = man-hours × `inefficiency_pct` × labor rate × chain. That's the
+  workbook's `INEF` ('Project Info'!G33 = 47%). **Defaults to 0** — a nonzero default
+  would silently reprice every existing job.
+- OT hours = (man-hours + inefficiency hours) × `(hours_per_week − 40) / hours_per_week`.
+  OT is priced at `ot_labor_rate`, a separate input (`OTLR`), **not** labor × 1.5 — on the
+  reference job it equals the straight rate.
+- Sales tax is charged on **raw** cost at `sales_tax_rate`, on equipment + material +
+  rental + gen expenses only — never subs or labor. Rental tax is folded into the Matl
+  column, which is where the workbook puts it.
+- Bond uses the existing tiered `calcBondPremium` untouched.
+
+Verified column-by-column against the DFW100 / MM26-0199 printout: Labor 5,188,838 vs
+5,188,861; Inefficiency 2,438,504 vs 2,438,512; bond 490,224.03 exact.
 
 **Indirect labor pay types (010).** Each role picks salary / subcontract / hourly.
 Salary takes an annual figure and prorates it (`annual / 52 × weeks × people`) with no OT

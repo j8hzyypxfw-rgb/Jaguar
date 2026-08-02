@@ -104,6 +104,14 @@ export interface Project {
   bond_rate_tier6: number;
   area_notes: string | null;
   notes: string | null;
+  // Budget Summary document (011)
+  inefficiency_pct: number;        // INEF — man-hours × this = inefficiency hours
+  ot_labor_rate: number | null;    // OTLR — null means "same as labor_rate"
+  address: string | null;
+  job_number: string | null;
+  square_feet: number | null;
+  drawings_label: string | null;
+  clarifications: string | null;   // one assumption per line
   created_at: string;
   updated_at: string;
 }
